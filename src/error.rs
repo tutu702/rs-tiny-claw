@@ -4,7 +4,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("I/O error{0}")]
+    #[error("{0}")]
+    Generic(String),
+    #[error("I/O error: {0}")]
     IoError(String),
 }
 

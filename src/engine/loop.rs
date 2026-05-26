@@ -1,11 +1,17 @@
 use std::sync::{Arc, Mutex};
 
-use crate::{error::Result, provider::LlmProvider, schema::Message, tools::Registry};
+use crate::{
+    error::{AppError, Result},
+    provider::LlmProvider,
+    schema::Message,
+    tools::Registry,
+};
 
 pub struct AgentEngine {
     provider: Arc<Mutex<dyn LlmProvider>>,
     registry: Arc<dyn Registry>,
     work_dir: String,
+    enable_thinking: bool,
 }
 
 impl AgentEngine {
@@ -13,11 +19,13 @@ impl AgentEngine {
         provider: Arc<Mutex<dyn LlmProvider>>,
         registry: Arc<dyn Registry>,
         work_dir: String,
+        enable_thinking: bool,
     ) -> Self {
         Self {
             provider,
             registry,
             work_dir,
+            enable_thinking,
         }
     }
 
@@ -27,6 +35,10 @@ impl AgentEngine {
 
     pub fn run(&self, user_prompt: &str) -> Result<()> {
         println!("[Engine] 引擎启动, 锁定工作区: {}", self.work_dir);
+        println!(
+            "[Engine] 慢思考模式 (Thinking Phase): {}",
+            self.enable_thinking
+        );
 
         let mut context_history = vec![];
         let system_prompt = "You are tiny-claw, an expert coding assistant. You have full access to tools in the workspace.";
@@ -34,32 +46,74 @@ impl AgentEngine {
         context_history.push(Message::user(user_prompt, None));
 
         let mut turn_count = 0;
+        const MAX_TURNS: usize = 50;
 
         loop {
             turn_count += 1;
             println!("========== [Turn {}] 开始 ==========\n", turn_count);
 
+            if turn_count > MAX_TURNS {
+                return Err(AppError::Generic("达到最大轮次限制".into()));
+            }
+
+            if self.enable_thinking {
+                println!("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...");
+
+                let thinking_response = {
+                    let mut provider = self.provider.lock().unwrap();
+                    provider.generate(&context_history, None)
+                };
+
+                match thinking_response {
+                    Ok(v) => {
+                        if v.content != "" {
+                            println!("🧠 [内部思考 Trace]: {}\n", v.content);
+                            context_history.push(v);
+                        }
+                    }
+                    Err(e) => {
+                        return Err(AppError::Generic(format!(
+                            "Thinking 阶段生成失败: {}",
+                            e.to_string()
+                        )));
+                    }
+                }
+            }
+
+            println!("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...");
+
             let available_tools = self.registry.get_available_tools();
+            let response = {
+                let mut provider = self.provider.lock().unwrap();
+                provider.generate(&context_history, Some(available_tools))
+            };
 
-            println!("[Engine] 正在思考 (Reasoning)...");
+            let mut message = match response {
+                Ok(v) => {
+                    if v.content != "" {
+                        println!("🤖 [对外回复]: {}\n", v.content);
+                    }
+                    v
+                }
+                Err(e) => {
+                    return Err(AppError::Generic(format!(
+                        "Action 阶段生成失败: {}",
+                        e.to_string()
+                    )));
+                }
+            };
 
-            let mut provider = self.provider.lock().unwrap();
+            let tool_calls = message.tool_calls.take();
+            context_history.push(message);
 
-            let mut response = provider.generate(&context_history, available_tools)?;
-
-            if response.content != "" {
-                println!("🤖 模型: {}\n", response.content);
-            }
-
-            let tool_calls = response.tool_calls.take();
-            context_history.push(response);
-
-            if tool_calls.is_none() || tool_calls.as_ref().is_some_and(|v| v.is_empty()) {
-                println!("[Engine] 任务完成，退出循环。");
+            let Some(tool_calls) = tool_calls.filter(|tc| !tc.is_empty()) else {
+                println!("[Engine] 模型未请求调用工具，任务宣告完成。");
                 break;
-            }
+            };
 
-            for tool_call in tool_calls.unwrap() {
+            println!("[Engine] 模型请求调用 {} 个工具...\n", tool_calls.len());
+
+            for tool_call in tool_calls {
                 println!(
                     " -> 🛠️ 执行工具: {}, 参数: {}\n",
                     tool_call.name, tool_call.arguments
@@ -99,13 +153,22 @@ mod tests {
         fn generate(
             &mut self,
             _messages: &[Message],
-            _available_tools: Vec<ToolDefinition>,
+            tools: Option<Vec<ToolDefinition>>,
         ) -> Result<Message> {
+            let Some(_) = tools.filter(|v| !v.is_empty()) else {
+                return Ok(Message {
+                    role: RoleType::Assistant("assistant".into()),
+                    content: "【推理中】目标是检查文件。我不能直接盲猜，我需要先调用 bash 工具执行 ls 命令，看看当前目录下有什么，然后再做定夺。".into(),
+                    tool_call_id: None,
+                    tool_calls: None,
+                });
+            };
+
             self.turn += 1;
             if self.turn == 1 {
                 return Ok(Message {
                     role: RoleType::Assistant("assistant".into()),
-                    content: "让我来看看当前目录下有什么文件。".into(),
+                    content: "我要执行我刚才计划的步骤了。".into(),
                     tool_call_id: None,
                     tool_calls: Some(vec![ToolCall {
                         id: "call_123".into(),
@@ -117,7 +180,7 @@ mod tests {
 
             return Ok(Message {
                 role: RoleType::Assistant("assistant".into()),
-                content: "我看到了文件列表，里面包含 main.go，任务完成！".into(),
+                content: "根据工具返回的结果，我看到了 main.go，任务圆满完成！".into(),
                 tool_call_id: None,
                 tool_calls: None,
             });
@@ -134,7 +197,11 @@ mod tests {
 
     impl Registry for MockRegistry {
         fn get_available_tools(&self) -> Vec<ToolDefinition> {
-            vec![]
+            vec![ToolDefinition {
+                name: "bash".into(),
+                description: "bash shell command".into(),
+                input_schema: serde_json::Value::Null,
+            }]
         }
 
         fn execute(&self, call: &ToolCall) -> Result<ToolResult> {
@@ -151,7 +218,7 @@ mod tests {
         let provider = Arc::new(Mutex::new(MockProvider::new()));
         let registry = Arc::new(MockRegistry::new());
 
-        let engine = AgentEngine::new(provider, registry, "/tmp".to_string());
+        let engine = AgentEngine::new(provider, registry, "/tmp".to_string(), true);
         let result = engine.run("帮我检查当前目录的文件");
 
         assert!(result.is_ok());

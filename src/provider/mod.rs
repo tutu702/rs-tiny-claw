@@ -5,6 +5,6 @@ pub trait LlmProvider {
     fn generate(
         &mut self,
         messages: &[Message],
-        available_tools: Vec<ToolDefinition>,
+        available_tools: Option<Vec<ToolDefinition>>,
     ) -> Result<Message>;
 }
