@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum RoleType {
-    System(String),
-    User(String),
-    Assistant(String),
-    Tool(String),
+    System,
+    User,
+    Assistant,
+    Tool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -19,7 +19,7 @@ pub struct Message {
 impl Message {
     pub fn system(content: &str) -> Self {
         Self {
-            role: RoleType::System("system".into()),
+            role: RoleType::System,
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
@@ -28,7 +28,7 @@ impl Message {
 
     pub fn user(content: &str, tool_call_id: Option<String>) -> Self {
         Self {
-            role: RoleType::User("user".into()),
+            role: RoleType::User,
             content: content.into(),
             tool_calls: None,
             tool_call_id: tool_call_id,
@@ -37,7 +37,7 @@ impl Message {
 
     pub fn assistant(content: String) -> Self {
         Self {
-            role: RoleType::Assistant("assistant".into()),
+            role: RoleType::Assistant,
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
@@ -46,7 +46,7 @@ impl Message {
 
     pub fn tool(content: &str, tool_call_id: &str) -> Self {
         Self {
-            role: RoleType::Tool("tool".into()),
+            role: RoleType::Tool,
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),

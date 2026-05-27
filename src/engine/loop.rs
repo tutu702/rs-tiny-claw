@@ -33,7 +33,7 @@ impl AgentEngine {
         &self.work_dir
     }
 
-    pub fn run(&self, user_prompt: &str) -> Result<()> {
+    pub async fn run(&self, user_prompt: &str) -> Result<()> {
         println!("[Engine] 引擎启动, 锁定工作区: {}", self.work_dir);
         println!(
             "[Engine] 慢思考模式 (Thinking Phase): {}",
@@ -61,7 +61,7 @@ impl AgentEngine {
 
                 let thinking_response = {
                     let mut provider = self.provider.lock().unwrap();
-                    provider.generate(&context_history, None)
+                    provider.generate(&context_history, None).await
                 };
 
                 match thinking_response {
@@ -85,7 +85,9 @@ impl AgentEngine {
             let available_tools = self.registry.get_available_tools();
             let response = {
                 let mut provider = self.provider.lock().unwrap();
-                provider.generate(&context_history, Some(available_tools))
+                provider
+                    .generate(&context_history, Some(available_tools))
+                    .await
             };
 
             let mut message = match response {
@@ -137,37 +139,41 @@ impl AgentEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::*;
+    use crate::{provider::openai::OpenaiProvider, schema::*};
 
     struct MockProvider {
-        turn: usize,
+        turn: std::sync::Mutex<usize>,
     }
 
     impl MockProvider {
         fn new() -> Self {
-            Self { turn: 0 }
+            Self {
+                turn: std::sync::Mutex::new(0),
+            }
         }
     }
 
+    #[async_trait::async_trait]
     impl LlmProvider for MockProvider {
-        fn generate(
+        async fn generate(
             &mut self,
             _messages: &[Message],
             tools: Option<Vec<ToolDefinition>>,
         ) -> Result<Message> {
             let Some(_) = tools.filter(|v| !v.is_empty()) else {
                 return Ok(Message {
-                    role: RoleType::Assistant("assistant".into()),
+                    role: RoleType::Assistant,
                     content: "【推理中】目标是检查文件。我不能直接盲猜，我需要先调用 bash 工具执行 ls 命令，看看当前目录下有什么，然后再做定夺。".into(),
                     tool_call_id: None,
                     tool_calls: None,
                 });
             };
 
-            self.turn += 1;
-            if self.turn == 1 {
+            *self.turn.lock().unwrap() += 1;
+            let turn = *self.turn.lock().unwrap();
+            if turn == 1 {
                 return Ok(Message {
-                    role: RoleType::Assistant("assistant".into()),
+                    role: RoleType::Assistant,
                     content: "我要执行我刚才计划的步骤了。".into(),
                     tool_call_id: None,
                     tool_calls: Some(vec![ToolCall {
@@ -179,7 +185,7 @@ mod tests {
             }
 
             return Ok(Message {
-                role: RoleType::Assistant("assistant".into()),
+                role: RoleType::Assistant,
                 content: "根据工具返回的结果，我看到了 main.go，任务圆满完成！".into(),
                 tool_call_id: None,
                 tool_calls: None,
@@ -198,28 +204,43 @@ mod tests {
     impl Registry for MockRegistry {
         fn get_available_tools(&self) -> Vec<ToolDefinition> {
             vec![ToolDefinition {
-                name: "bash".into(),
-                description: "bash shell command".into(),
-                input_schema: serde_json::Value::Null,
+                name: "get_weather".into(),
+                description: "获取指定城市的当前天气情况。".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                        }
+                    },
+                    "required": ["city"]
+                }),
             }]
         }
 
         fn execute(&self, call: &ToolCall) -> Result<ToolResult> {
+            println!("-> [Mock 工具执行] 获取 {} 的天气中...\n", call.name);
             Ok(ToolResult {
                 tool_call_id: call.id.clone(),
-                output: "-rw-r--r-- 1 user group 234 Oct 24 10:00 main.go\n".into(),
+                output: "API 返回：今天是晴天，气温 25 度。".into(),
                 is_error: false,
             })
         }
     }
 
-    #[test]
-    fn test_agent_engine_run_with_tool_calls() {
-        let provider = Arc::new(Mutex::new(MockProvider::new()));
+    #[tokio::test]
+    async fn test_agent_engine_run_with_tool_calls() {
+        let base_url = "https://api.minimaxi.com/v1";
+        let model = "MiniMax-M2.7";
+        let api_key = std::env::var("LLM_API_KEY").expect("请设置环境变量 LLM_API_KEY");
+        let llm_provider = OpenaiProvider::new(base_url, model, &api_key);
+        let provider = Arc::new(Mutex::new(llm_provider));
         let registry = Arc::new(MockRegistry::new());
 
         let engine = AgentEngine::new(provider, registry, "/tmp".to_string(), true);
-        let result = engine.run("帮我检查当前目录的文件");
+
+        let prompt = "我想去北京跑步，帮我查查天气适合吗？";
+        let result = engine.run(prompt).await;
 
         assert!(result.is_ok());
     }
