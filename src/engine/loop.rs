@@ -121,7 +121,7 @@ impl AgentEngine {
                     tool_call.name, tool_call.arguments
                 );
 
-                let result = self.registry.execute(&tool_call)?;
+                let result = self.registry.execute(&tool_call).await?;
 
                 if result.is_error {
                     println!(" -> ❌ 工具执行报错: {}\n", result.output);
@@ -201,7 +201,10 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Registry for MockRegistry {
+        fn register(&mut self, _tool: Arc<dyn crate::tools::BaseTool>) {}
+
         fn get_available_tools(&self) -> Vec<ToolDefinition> {
             vec![ToolDefinition {
                 name: "get_weather".into(),
@@ -218,7 +221,7 @@ mod tests {
             }]
         }
 
-        fn execute(&self, call: &ToolCall) -> Result<ToolResult> {
+        async fn execute(&self, call: &ToolCall) -> Result<ToolResult> {
             println!("-> [Mock 工具执行] 获取 {} 的天气中...\n", call.name);
             Ok(ToolResult {
                 tool_call_id: call.id.clone(),
