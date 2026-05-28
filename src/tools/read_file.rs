@@ -3,12 +3,10 @@ use std::path::PathBuf;
 use crate::{
     error::{AppError, Result},
     schema::ToolDefinition,
-    tools::BaseTool,
+    tools::{BaseTool, MAX_CONTENT_LENGTH},
 };
 use async_trait::async_trait;
 use serde::Deserialize;
-
-const MAX_CONTENT_LENGTH: usize = 8000;
 
 pub struct ReadFileTool {
     work_dir: String,
@@ -42,7 +40,7 @@ impl BaseTool for ReadFileTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "要读取的文件路径，如 cmd/claw/main.go",
+                        "description": "要读取的文件路径，如 src/main.rs",
                     },
                 },
                 "required": ["path"],

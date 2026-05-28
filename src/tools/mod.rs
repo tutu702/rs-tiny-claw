@@ -5,7 +5,11 @@ use crate::error::Result;
 use crate::schema::{ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 
+pub mod bash;
 pub mod read_file;
+pub mod write_file;
+
+pub const MAX_CONTENT_LENGTH: usize = 8000;
 
 #[async_trait]
 pub trait BaseTool: Send + Sync {
