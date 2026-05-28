@@ -6,6 +6,7 @@ use crate::schema::{ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 
 pub mod bash;
+pub mod edit_file;
 pub mod read_file;
 pub mod write_file;
 
