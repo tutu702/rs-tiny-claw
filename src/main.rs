@@ -1,8 +1,8 @@
 use std::{
     env,
-    sync::{Arc, Mutex},
+    sync::{Arc},
 };
-
+use tokio::sync::Mutex;
 use anyhow::Result;
 use rs_tiny_claw::{
     engine::r#loop::AgentEngine,
@@ -34,15 +34,10 @@ async fn main() -> Result<()> {
     registry.register(Arc::new(BashTool::new(&work_dir)));
     registry.register(Arc::new(EditFileTool::new(&work_dir)));
 
-    let engine = AgentEngine::new(provider, Arc::new(registry), work_dir, false);
+    let engine = AgentEngine::new(provider, Arc::new(registry), work_dir, true);
 
-    let prompt = r#"
-    我当前目录下有一个 server.go 文件。
-    请帮我把里面 "TODO: 增加鉴权逻辑" 下面的那个 if 语句，整个替换为： 
-    if user == nil { 
-        fmt.Println("Forbidden!")
-        return
-    }"#;
+    let prompt = r#"我当前目录下有 a.txt, b.txt, c.txt 三个文件。
+    为了节省时间，请你同时一次性读取这三个文件，并将它们的内容综合起来，告诉我它们分别记录了什么领域的信息。"#;
 
     engine.run(prompt).await?;
 

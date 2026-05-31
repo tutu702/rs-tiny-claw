@@ -20,7 +20,7 @@ pub trait BaseTool: Send + Sync {
 }
 
 #[async_trait]
-pub trait Registry {
+pub trait Registry: Send + Sync {
     fn register(&mut self, tool: Arc<dyn BaseTool>);
     fn get_available_tools(&self) -> Vec<ToolDefinition>;
     async fn execute(&self, call: &ToolCall) -> Result<ToolResult>;

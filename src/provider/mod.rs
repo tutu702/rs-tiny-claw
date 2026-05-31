@@ -15,71 +15,67 @@ pub trait LlmProvider {
 
 #[derive(Debug, Serialize)]
 pub struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<ToolSpec>>,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // tool_choice: Option<String>,
+    pub tools: Option<Vec<ToolSpec>>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ChatMessage {
-    role: String,
+    pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
+    pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<ToolSpec>>,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // reasoning_content: Option<String>,
+    pub tool_calls: Option<Vec<ToolSpec>>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ToolSpec {
     #[serde(rename = "type")]
-    kind: String,
-    function: ToolFunctionSpec,
+    pub kind: String,
+    pub function: ToolFunctionSpec,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ToolFunctionSpec {
-    name: String,
-    description: String,
-    parameters: serde_json::Value,
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatResponse {
-    choices: Vec<Choice>,
+    pub choices: Vec<Choice>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Choice {
-    message: ResponseMessage,
+    pub message: ResponseMessage,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ResponseMessage {
     #[serde(default)]
-    content: Option<String>,
+    pub content: Option<String>,
     #[serde(default)]
-    reasoning_content: Option<String>,
+    pub reasoning_content: Option<String>,
     #[serde(default)]
-    tool_calls: Option<Vec<LlmToolCall>>,
+    pub tool_calls: Option<Vec<LlmToolCall>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LlmToolCall {
-    id: String,
+    pub id: String,
     #[serde(rename = "type")]
-    kind: String,
-    function: FunctionCall,
+    pub kind: String,
+    pub function: FunctionCall,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FunctionCall {
-    name: String,
-    arguments: String,
+    pub name: String,
+    pub arguments: String,
 }

@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex};
-
+use std::sync::{Arc};
+use tokio::sync::Mutex;
 use crate::{
     error::{AppError, Result},
     provider::LlmProvider,
@@ -60,7 +60,7 @@ impl AgentEngine {
                 println!("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...");
 
                 let thinking_response = {
-                    let mut provider = self.provider.lock().unwrap();
+                    let mut provider = self.provider.lock().await;
                     provider.generate(&context_history, None).await
                 };
 
@@ -84,7 +84,7 @@ impl AgentEngine {
 
             let available_tools = self.registry.get_available_tools();
             let response = {
-                let mut provider = self.provider.lock().unwrap();
+                let mut provider = self.provider.lock().await;
                 provider
                     .generate(&context_history, Some(available_tools))
                     .await
@@ -115,21 +115,47 @@ impl AgentEngine {
 
             println!("[Engine] 模型请求调用 {} 个工具...\n", tool_calls.len());
 
-            for tool_call in tool_calls {
-                println!(
-                    " -> 🛠️ 执行工具: {}, 参数: {}\n",
-                    tool_call.name, tool_call.arguments
-                );
+            let mut observation_msgs = vec![Message::user("", None); tool_calls.len()];
+            let mut tasks: Vec<_> = tool_calls
+                .into_iter()
+                .enumerate()
+                .map(|(i, tool_call)| {
+                    let registry = self.registry.clone();
+                    tokio::spawn(async move {
+                        println!(
+                            " -> 🛠️ 执行工具: {}, 参数: {}\n",
+                            tool_call.name, tool_call.arguments
+                        );
+                        let result = registry.execute(&tool_call).await?;
+                        if result.is_error {
+                            println!(" -> ❌ 工具执行报错: {}\n", result.output);
+                        } else {
+                            println!(
+                                " -> ✅ 工具执行成功 (返回 {} 字节)\n",
+                                result.output.len()
+                            )
+                        }
 
-                let result = self.registry.execute(&tool_call).await?;
+                        Ok::<_, AppError>((i, Message::user(&result.output, Some(tool_call.id.clone()))))
+                    })
+                })
+                .collect();
 
-                if result.is_error {
-                    println!(" -> ❌ 工具执行报错: {}\n", result.output);
-                } else {
-                    println!(" -> ✅ 工具执行成功 (返回 {} 字节)\n", result.output.len())
+            while let Some(res) = tasks.pop() {
+                match res.await {
+                    Ok(Ok((idx, msg))) => observation_msgs[idx] = msg,
+                    Ok(Err(e)) => return Err(e),
+                    Err(e) => {
+                        return Err(AppError::Generic(format!(
+                            "任务执行失败: {}",
+                            e.to_string()
+                        )))
+                    }
                 }
+            }
 
-                context_history.push(Message::user(&result.output, Some(tool_call.id.clone())));
+            for msg in observation_msgs {
+                context_history.push(msg)
             }
         }
         Ok(())
@@ -141,58 +167,6 @@ mod tests {
     use super::*;
     use crate::{provider::openai::OpenaiProvider, schema::*};
 
-    struct MockProvider {
-        turn: std::sync::Mutex<usize>,
-    }
-
-    impl MockProvider {
-        fn new() -> Self {
-            Self {
-                turn: std::sync::Mutex::new(0),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl LlmProvider for MockProvider {
-        async fn generate(
-            &mut self,
-            _messages: &[Message],
-            tools: Option<Vec<ToolDefinition>>,
-        ) -> Result<Message> {
-            let Some(_) = tools.filter(|v| !v.is_empty()) else {
-                return Ok(Message {
-                    role: RoleType::Assistant,
-                    content: "【推理中】目标是检查文件。我不能直接盲猜，我需要先调用 bash 工具执行 ls 命令，看看当前目录下有什么，然后再做定夺。".into(),
-                    tool_call_id: None,
-                    tool_calls: None,
-                });
-            };
-
-            *self.turn.lock().unwrap() += 1;
-            let turn = *self.turn.lock().unwrap();
-            if turn == 1 {
-                return Ok(Message {
-                    role: RoleType::Assistant,
-                    content: "我要执行我刚才计划的步骤了。".into(),
-                    tool_call_id: None,
-                    tool_calls: Some(vec![ToolCall {
-                        id: "call_123".into(),
-                        name: "bash".into(),
-                        arguments: serde_json::json!({"command": "ls -la"}),
-                    }]),
-                });
-            }
-
-            return Ok(Message {
-                role: RoleType::Assistant,
-                content: "根据工具返回的结果，我看到了 main.go，任务圆满完成！".into(),
-                tool_call_id: None,
-                tool_calls: None,
-            });
-        }
-    }
-
     struct MockRegistry {}
 
     impl MockRegistry {
@@ -200,6 +174,10 @@ mod tests {
             Self {}
         }
     }
+
+    // MockRegistry 必须实现 Send + Sync 才能用于多线程 spawn
+    unsafe impl Send for MockRegistry {}
+    unsafe impl Sync for MockRegistry {}
 
     #[async_trait::async_trait]
     impl Registry for MockRegistry {

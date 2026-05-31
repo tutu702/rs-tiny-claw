@@ -33,19 +33,19 @@ impl crate::provider::LlmProvider for OpenaiProvider {
     ) -> Result<Message> {
         let chat_messages: Vec<ChatMessage> = messages
             .iter()
-            .map(|msg| match msg.role {
-                RoleType::System => ChatMessage {
+            .filter_map(|msg| match msg.role {
+                RoleType::System => Some(ChatMessage {
                     role: "system".into(),
                     content: Some(msg.content.clone()),
                     tool_call_id: None,
                     tool_calls: None,
-                },
-                RoleType::User => ChatMessage {
+                }),
+                RoleType::User => Some(ChatMessage {
                     role: "user".into(),
                     content: Some(msg.content.clone()),
                     tool_call_id: msg.tool_call_id.clone(),
                     tool_calls: None,
-                },
+                }),
                 RoleType::Assistant => {
                     let content = if msg.content.is_empty() {
                         None
@@ -67,19 +67,24 @@ impl crate::provider::LlmProvider for OpenaiProvider {
                             .collect()
                     });
 
-                    ChatMessage {
+                    // 跳过空的 assistant 消息（tool_calls 被 take 后残留的）
+                    if content.is_none() && tool_calls.is_none() {
+                        return None;
+                    }
+
+                    Some(ChatMessage {
                         role: "assistant".into(),
                         content,
                         tool_call_id: msg.tool_call_id.clone(),
                         tool_calls,
-                    }
+                    })
                 }
-                RoleType::Tool => ChatMessage {
+                RoleType::Tool => Some(ChatMessage {
                     role: "tool".into(),
                     content: Some(msg.content.clone()),
                     tool_call_id: msg.tool_call_id.clone(),
                     tool_calls: None,
-                },
+                }),
             })
             .collect();
 
@@ -102,6 +107,12 @@ impl crate::provider::LlmProvider for OpenaiProvider {
             tools,
         };
 
+        // 调试日志：打印请求 JSON
+        let request_json = serde_json::to_string_pretty(&request)
+            .unwrap_or_else(|_| "Failed to serialize request".into());
+        // println!("\n[DEBUG] === LLM Request ===");
+        // println!("{}\n", request_json);
+
         let response = self
             .http_client
             .post(format!("{}/chat/completions", self.base_url))
@@ -113,6 +124,9 @@ impl crate::provider::LlmProvider for OpenaiProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            // println!("[DEBUG] === LLM Response Error ===");
+            // println!("Status: {}\nBody: {}\n", status, body);
             return Err(AppError::Generic(format!(
                 "OpenAI API request failed: {}",
                 status
@@ -123,6 +137,12 @@ impl crate::provider::LlmProvider for OpenaiProvider {
             .json()
             .await
             .map_err(|e| AppError::Generic(format!("Failed to parse response: {}", e)))?;
+
+        // 调试日志：打印响应 JSON
+        // let response_json = serde_json::to_string_pretty(&chat_resp)
+            // .unwrap_or_else(|_| "Failed to serialize response".into());
+        // println!("[DEBUG] === LLM Response ===");
+        // println!("{}\n", response_json);
 
         let choice = chat_resp
             .choices
