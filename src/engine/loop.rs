@@ -1,11 +1,12 @@
-use std::sync::{Arc};
-use tokio::sync::Mutex;
 use crate::{
+    engine::reporter::Reporter,
     error::{AppError, Result},
     provider::LlmProvider,
     schema::Message,
     tools::Registry,
 };
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct AgentEngine {
     provider: Arc<Mutex<dyn LlmProvider>>,
@@ -33,12 +34,8 @@ impl AgentEngine {
         &self.work_dir
     }
 
-    pub async fn run(&self, user_prompt: &str) -> Result<()> {
+    pub async fn run(&self, user_prompt: &str, reporter: &dyn Reporter) -> Result<()> {
         println!("[Engine] 引擎启动, 锁定工作区: {}", self.work_dir);
-        println!(
-            "[Engine] 慢思考模式 (Thinking Phase): {}",
-            self.enable_thinking
-        );
 
         let mut context_history = vec![];
         let system_prompt = "You are tiny-claw, an expert coding assistant. You have full access to tools in the workspace.";
@@ -46,18 +43,14 @@ impl AgentEngine {
         context_history.push(Message::user(user_prompt, None));
 
         let mut turn_count = 0;
-        const MAX_TURNS: usize = 50;
 
         loop {
             turn_count += 1;
             println!("========== [Turn {}] 开始 ==========\n", turn_count);
 
-            if turn_count > MAX_TURNS {
-                return Err(AppError::Generic("达到最大轮次限制".into()));
-            }
-
             if self.enable_thinking {
-                println!("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...");
+                // println!("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...");
+                reporter.on_thinking().await;
 
                 let thinking_response = {
                     let mut provider = self.provider.lock().await;
@@ -93,7 +86,8 @@ impl AgentEngine {
             let mut message = match response {
                 Ok(v) => {
                     if v.content != "" {
-                        println!("🤖 [对外回复]: {}\n", v.content);
+                        // println!("🤖 [对外回复]: {}\n", v.content);
+                        reporter.on_message(&v.content).await;
                     }
                     v
                 }
@@ -116,40 +110,36 @@ impl AgentEngine {
             println!("[Engine] 模型请求调用 {} 个工具...\n", tool_calls.len());
 
             let mut observation_msgs = vec![Message::user("", None); tool_calls.len()];
-            let mut tasks: Vec<_> = tool_calls
-                .into_iter()
-                .enumerate()
-                .map(|(i, tool_call)| {
-                    let registry = self.registry.clone();
-                    tokio::spawn(async move {
-                        println!(
-                            " -> 🛠️ 执行工具: {}, 参数: {}\n",
-                            tool_call.name, tool_call.arguments
-                        );
-                        let result = registry.execute(&tool_call).await?;
-                        if result.is_error {
-                            println!(" -> ❌ 工具执行报错: {}\n", result.output);
-                        } else {
-                            println!(
-                                " -> ✅ 工具执行成功 (返回 {} 字节)\n",
-                                result.output.len()
-                            )
-                        }
+            let mut tasks = Vec::with_capacity(tool_calls.len());
+            for (i, tool_call) in tool_calls.into_iter().enumerate() {
+                let args_str = tool_call.arguments.to_string();
+                reporter.on_tool_call(&tool_call.name, &args_str).await;
 
-                        Ok::<_, AppError>((i, Message::user(&result.output, Some(tool_call.id.clone()))))
-                    })
-                })
-                .collect();
+                let registry = self.registry.clone();
+                tasks.push(tokio::spawn(async move {
+                    let result = registry.execute(&tool_call).await?;
+                    Ok::<_, AppError>((i, result, tool_call.id))
+                }));
+            }
 
             while let Some(res) = tasks.pop() {
                 match res.await {
-                    Ok(Ok((idx, msg))) => observation_msgs[idx] = msg,
+                    Ok(Ok((idx, result, tool_call_id))) => {
+                        let mut display_output = result.output.clone();
+                        if display_output.len() > 200 {
+                            display_output = format!("{}... (已截断)", &display_output[..200]);
+                        }
+                        reporter
+                            .on_tool_result(&result.tool_call_id, &display_output, result.is_error)
+                            .await;
+                        observation_msgs[idx] = Message::user(&result.output, Some(tool_call_id));
+                    }
                     Ok(Err(e)) => return Err(e),
                     Err(e) => {
                         return Err(AppError::Generic(format!(
                             "任务执行失败: {}",
                             e.to_string()
-                        )))
+                        )));
                     }
                 }
             }
@@ -165,7 +155,9 @@ impl AgentEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{provider::openai::OpenaiProvider, schema::*};
+    use crate::{
+        engine::terminal_reporter::TerminalReporter, provider::openai::OpenaiProvider, schema::*,
+    };
 
     struct MockRegistry {}
 
@@ -220,8 +212,9 @@ mod tests {
 
         let engine = AgentEngine::new(provider, registry, "/tmp".to_string(), true);
 
+        let t_reporter = TerminalReporter::new();
         let prompt = "我想去北京跑步，帮我查查天气适合吗？";
-        let result = engine.run(prompt).await;
+        let result = engine.run(prompt, &t_reporter).await;
 
         assert!(result.is_ok());
     }

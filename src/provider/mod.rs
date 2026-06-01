@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod openai;
 #[async_trait]
-pub trait LlmProvider {
+pub trait LlmProvider: Send + Sync {
     async fn generate(
         &mut self,
         messages: &[Message],

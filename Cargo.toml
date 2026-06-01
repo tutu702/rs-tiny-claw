@@ -12,3 +12,9 @@ tokio = { version = "1.52.3", features = ["full"] }
 async-trait = "0.1"
 reqwest = { version = "0.13.4", features = ["json"] }
 futures = "0.3.32"
+openlark = { version = "0.16.1", default-features = false, features = [
+    "communication",
+    "websocket",
+    "webhook-card",
+    "webhook-signature",
+] }
