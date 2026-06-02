@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 #[tokio::main]
 async fn main() -> Result<()> {
     let work_dir = env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| p.join("workspace").to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".to_string());
 
     let base_url = std::env::var("OPENAI_BASE_URL").expect("请设置环境变量 OPENAI_BASE_URL");
@@ -32,17 +32,19 @@ async fn main() -> Result<()> {
     registry.register(Arc::new(BashTool::new(&work_dir)));
     registry.register(Arc::new(EditFileTool::new(&work_dir)));
 
-    let engine = AgentEngine::new(provider, Arc::new(registry), work_dir, true);
+    let engine = AgentEngine::new(provider, Arc::new(registry), &work_dir, true);
 
-    // let prompt = r#"我当前目录下有 a.txt, b.txt, c.txt 三个文件。
-    // 为了节省时间，请你同时一次性读取这三个文件，并将它们的内容综合起来，告诉我它们分别记录了什么领域的信息。"#;
+    cli_start(Arc::new(engine)).await;
 
-    // let reporter = TerminalReporter::new();
-    // engine.run(prompt, &reporter).await?;
-
-    feishu_bot_start(Arc::new(engine)).await;
+    // feishu_bot_start(Arc::new(engine)).await;
 
     Ok(())
+}
+
+async fn cli_start(engine: Arc<AgentEngine>) {
+    let reporter = TerminalReporter::new();
+    let prompt = r#"我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。 写完之后，帮我把代码用 git 提交一下。"#;
+    engine.run(prompt, &reporter).await.unwrap();
 }
 
 async fn feishu_bot_start(engine: Arc<AgentEngine>) {

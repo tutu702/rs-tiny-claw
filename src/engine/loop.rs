@@ -1,4 +1,5 @@
 use crate::{
+    context::composer::PromptComposer,
     engine::reporter::Reporter,
     error::{AppError, Result},
     provider::LlmProvider,
@@ -13,20 +14,22 @@ pub struct AgentEngine {
     registry: Arc<dyn Registry>,
     work_dir: String,
     enable_thinking: bool,
+    composer: PromptComposer,
 }
 
 impl AgentEngine {
     pub fn new(
         provider: Arc<Mutex<dyn LlmProvider>>,
         registry: Arc<dyn Registry>,
-        work_dir: String,
+        work_dir: &str,
         enable_thinking: bool,
     ) -> Self {
         Self {
             provider,
             registry,
-            work_dir,
+            work_dir: work_dir.to_string(),
             enable_thinking,
+            composer: PromptComposer::new(&work_dir),
         }
     }
 
@@ -38,8 +41,8 @@ impl AgentEngine {
         println!("[Engine] 引擎启动, 锁定工作区: {}", self.work_dir);
 
         let mut context_history = vec![];
-        let system_prompt = "You are tiny-claw, an expert coding assistant. You have full access to tools in the workspace.";
-        context_history.push(Message::system(system_prompt));
+        let system_msg = self.composer.build();
+        context_history.push(system_msg);
         context_history.push(Message::user(user_prompt, None));
 
         let mut turn_count = 0;
@@ -210,7 +213,7 @@ mod tests {
         let provider = Arc::new(Mutex::new(llm_provider));
         let registry = Arc::new(MockRegistry::new());
 
-        let engine = AgentEngine::new(provider, registry, "/tmp".to_string(), true);
+        let engine = AgentEngine::new(provider, registry, "/tmp", true);
 
         let t_reporter = TerminalReporter::new();
         let prompt = "我想去北京跑步，帮我查查天气适合吗？";

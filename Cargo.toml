@@ -18,3 +18,4 @@ openlark = { version = "0.16.1", default-features = false, features = [
     "webhook-card",
     "webhook-signature",
 ] }
+walkdir = "2.5.0"
