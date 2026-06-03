@@ -1,6 +1,6 @@
 use crate::{
     context::composer::PromptComposer,
-    engine::reporter::Reporter,
+    engine::{reporter::Reporter, session::Session},
     error::{AppError, Result},
     provider::LlmProvider,
     schema::Message,
@@ -37,13 +37,18 @@ impl AgentEngine {
         &self.work_dir
     }
 
-    pub async fn run(&self, user_prompt: &str, reporter: &dyn Reporter) -> Result<()> {
-        println!("[Engine] 引擎启动, 锁定工作区: {}", self.work_dir);
+    pub async fn run(&self, session: Arc<Session>, reporter: &dyn Reporter) -> Result<()> {
+        println!(
+            "[Engine] 唤醒会话 [{}]，锁定工作区: {}\n",
+            session.id(),
+            session.work_dir(),
+        );
 
         let mut context_history = vec![];
         let system_msg = self.composer.build();
+        let working_memory = session.get_working_memory(6)?;
         context_history.push(system_msg);
-        context_history.push(Message::user(user_prompt, None));
+        context_history.extend(working_memory);
 
         let mut turn_count = 0;
 
@@ -63,7 +68,8 @@ impl AgentEngine {
                 match thinking_response {
                     Ok(v) => {
                         if v.content != "" {
-                            println!("🧠 [内部思考 Trace]: {}\n", v.content);
+                            // println!("🧠 [内部思考 Trace]: {}\n", v.content);
+                            session.append(&[v.clone()])?;
                             context_history.push(v);
                         }
                     }
@@ -76,7 +82,7 @@ impl AgentEngine {
                 }
             }
 
-            println!("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...");
+            // println!("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...");
 
             let available_tools = self.registry.get_available_tools();
             let response = {
@@ -103,6 +109,7 @@ impl AgentEngine {
             };
 
             let tool_calls = message.tool_calls.take();
+            session.append(&[message.clone()])?;
             context_history.push(message);
 
             let Some(tool_calls) = tool_calls.filter(|tc| !tc.is_empty()) else {
@@ -110,7 +117,7 @@ impl AgentEngine {
                 break;
             };
 
-            println!("[Engine] 模型请求调用 {} 个工具...\n", tool_calls.len());
+            // println!("[Engine] 模型请求调用 {} 个工具...\n", tool_calls.len());
 
             let mut observation_msgs = vec![Message::user("", None); tool_calls.len()];
             let mut tasks = Vec::with_capacity(tool_calls.len());
@@ -147,9 +154,10 @@ impl AgentEngine {
                 }
             }
 
-            for msg in observation_msgs {
-                context_history.push(msg)
-            }
+            session.append(&observation_msgs)?;
+            // for msg in observation_msgs {
+            //     context_history.push(msg)
+            // }
         }
         Ok(())
     }
@@ -159,7 +167,9 @@ impl AgentEngine {
 mod tests {
     use super::*;
     use crate::{
-        engine::terminal_reporter::TerminalReporter, provider::openai::OpenaiProvider, schema::*,
+        engine::{session::GLOBAL_SESSION_MGR, terminal_reporter::TerminalReporter},
+        provider::openai::OpenaiProvider,
+        schema::*,
     };
 
     struct MockRegistry {}
@@ -213,11 +223,16 @@ mod tests {
         let provider = Arc::new(Mutex::new(llm_provider));
         let registry = Arc::new(MockRegistry::new());
 
-        let engine = AgentEngine::new(provider, registry, "/tmp", true);
+        let work_dir = "/tmp";
+        let engine = AgentEngine::new(provider, registry, work_dir, true);
 
         let t_reporter = TerminalReporter::new();
+        let session = GLOBAL_SESSION_MGR
+            .get_or_create("test_001", work_dir)
+            .unwrap();
         let prompt = "我想去北京跑步，帮我查查天气适合吗？";
-        let result = engine.run(prompt, &t_reporter).await;
+        session.append(&[Message::user(prompt, None)]).unwrap();
+        let result = engine.run(session, &t_reporter).await;
 
         assert!(result.is_ok());
     }

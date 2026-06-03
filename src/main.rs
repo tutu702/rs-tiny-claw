@@ -1,56 +1,122 @@
+use std::{env, sync::Arc, time::Duration};
+
 use anyhow::Result;
 use rs_tiny_claw::{
     channel::feishu_bot::FeishuBot,
-    engine::{self, r#loop::AgentEngine, reporter::Reporter, terminal_reporter::TerminalReporter},
+    engine::{
+        r#loop::AgentEngine, reporter::Reporter, session::GLOBAL_SESSION_MGR,
+        terminal_reporter::TerminalReporter,
+    },
     provider::openai::OpenaiProvider,
+    schema::Message,
     tools::{
         Registry, ToolRegistry, bash::BashTool, edit_file::EditFileTool, read_file::ReadFileTool,
         write_file::WritefileTool,
     },
 };
-use std::{env, sync::Arc};
 use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let work_dir = env::current_dir()
-        .map(|p| p.join("workspace").to_string_lossy().to_string())
-        .unwrap_or_else(|_| ".".to_string());
+    // let work_dir = env::current_dir()
+    //     .map(|p| p.join("workspace").to_string_lossy().to_string())
+    //     .unwrap_or_else(|_| ".".into());
+    let work_dir = "/tmp/project_front";
 
-    let base_url = std::env::var("OPENAI_BASE_URL").expect("请设置环境变量 OPENAI_BASE_URL");
-    let model = std::env::var("LLM_MODEL").expect("请设置环境变量 LLM_MODEL");
-    let api_key = std::env::var("LLM_API_KEY").expect("请设置环境变量 LLM_API_KEY");
+    let base_url = std::env::var("OPENAI_BASE_URL")?;
+    let model = std::env::var("LLM_MODEL")?;
+    let api_key = std::env::var("LLM_API_KEY")?;
 
-    println!("work_dir: {}", work_dir);
+    println!("work_dir: {work_dir}");
 
     let llm_provider = OpenaiProvider::new(&base_url, &model, &api_key);
     let provider = Arc::new(Mutex::new(llm_provider));
 
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(ReadFileTool::new(&work_dir)));
-    registry.register(Arc::new(WritefileTool::new(&work_dir)));
-    registry.register(Arc::new(BashTool::new(&work_dir)));
-    registry.register(Arc::new(EditFileTool::new(&work_dir)));
+    // registry.register(Arc::new(WritefileTool::new(&work_dir)));
+    // registry.register(Arc::new(BashTool::new(&work_dir)));
+    // registry.register(Arc::new(EditFileTool::new(&work_dir)));
 
-    let engine = AgentEngine::new(provider, Arc::new(registry), &work_dir, true);
+    let engine = Arc::new(AgentEngine::new(
+        provider,
+        Arc::new(registry),
+        &work_dir,
+        false,
+    ));
 
-    cli_start(Arc::new(engine)).await;
-
-    // feishu_bot_start(Arc::new(engine)).await;
+    cli_start_with_session(engine).await?;
+    // cli_start(&work_dir, engine).await?;
+    // feishu_bot_start(engine).await?;
 
     Ok(())
 }
 
-async fn cli_start(engine: Arc<AgentEngine>) {
-    let reporter = TerminalReporter::new();
-    let prompt = r#"我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。 写完之后，帮我把代码用 git 提交一下。"#;
-    engine.run(prompt, &reporter).await.unwrap();
+async fn cli_start_with_session(engine: Arc<AgentEngine>) -> Result<()> {
+    let reporter: Arc<dyn Reporter> = Arc::new(TerminalReporter::new());
+
+    let front = tokio::spawn(run_session_a(engine.clone(), Arc::clone(&reporter)));
+    let back = tokio::spawn(run_session_b(engine, reporter));
+
+    let _ = tokio::join!(front, back);
+    Ok(())
 }
 
-async fn feishu_bot_start(engine: Arc<AgentEngine>) {
-    let app_id = std::env::var("FEISHU_APP_ID").expect("请设置环境变量 FEISHU_APP_ID");
-    let app_secret = std::env::var("FEISHU_APP_SECRET").expect("请设置环境变量 FEISHU_APP_SECRET");
-    let base_url = std::env::var("FEISHU_BASE_URL").expect("请设置环境变量 FEISHU_BASE_URL");
+async fn run_session_a(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) -> Result<()> {
+    let session = GLOBAL_SESSION_MGR.get_or_create("chat_front_001", "/tmp/project_front")?;
+
+    println!("\n>>> 🙋‍♂️ [Session A / Turn 1]: 帮我看看 README.md 里记录了什么密钥？");
+    session.append(&[Message::user("帮我看看 README.md 里记录了什么密钥？", None)])?;
+    engine.run(Arc::clone(&session), reporter.as_ref()).await?;
+
+    // 故意制造大量"废话"对话，刷掉记忆（假设 Working Memory Limit=6）
+    for _ in 0..6 {
+        session.append(&[Message::user("这只是一句闲聊占位符。", None)])?;
+        session.append(&[Message::assistant("好的，收到闲聊。".into())])?;
+
+        println!("\n>>> 🙋‍♂️ [Session A / Turn 2]: 请直接告诉我，刚才第一轮你查到的那个密钥是什么？");
+        session.append(&[Message::user(
+            "请直接告诉我，刚才第一轮你查到的那个密钥是什么？不准调用工具！",
+            None,
+        )])?;
+        engine.run(Arc::clone(&session), reporter.as_ref()).await?;
+    }
+    Ok(())
+}
+
+async fn run_session_b(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) -> Result<()> {
+    // 稍微错开一点时间发起请求
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let session = GLOBAL_SESSION_MGR.get_or_create("chat_back_002", "/tmp/project_back")?;
+
+    println!("\n>>> 🙋‍♂️ [Session B]: 别人查到了一个密钥，你这里能看到吗？");
+    session.append(&[Message::user(
+        "别人查到了一个密钥，你这里能看到吗？不准调用工具！",
+        None,
+    )])?;
+    engine
+        .run(session, reporter.as_ref())
+        .await
+        .map_err(anyhow::Error::from)
+}
+
+async fn cli_start(work_dir: &str, engine: Arc<AgentEngine>) -> Result<()> {
+    let reporter = TerminalReporter::new();
+    let prompt = r#"我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。 写完之后，帮我把代码用 git 提交一下。"#;
+
+    let session = GLOBAL_SESSION_MGR.get_or_create("chat_cli_001", work_dir)?;
+    session.append(&[Message::user(prompt, None)])?;
+    engine
+        .run(session, &reporter)
+        .await
+        .map_err(anyhow::Error::from)
+}
+
+async fn feishu_bot_start(engine: Arc<AgentEngine>) -> Result<()> {
+    let app_id = std::env::var("FEISHU_APP_ID")?;
+    let app_secret = std::env::var("FEISHU_APP_SECRET")?;
+    let base_url = std::env::var("FEISHU_BASE_URL")?;
     let bot = Arc::new(FeishuBot::new(&app_id, &app_secret, &base_url, engine));
-    let _ = bot.start_websocket().await;
+    bot.start_websocket().await.map_err(anyhow::Error::from)
 }

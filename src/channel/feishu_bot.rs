@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use crate::engine::session::GLOBAL_SESSION_MGR;
 use crate::error::AppError;
+use crate::schema;
 use crate::{
     engine::{r#loop::AgentEngine, reporter::Reporter},
     error::Result,
@@ -180,7 +182,9 @@ impl FeishuBot {
         let client = Arc::clone(&self.client);
         tokio::spawn(async move {
             let reporter = FeishuReporter::new(&chat_id, client);
-            if let Err(err) = engine.run(&text, &reporter).await {
+            let session = GLOBAL_SESSION_MGR.get_or_create(&chat_id, "/tmp").unwrap();
+            let _ = session.append(&[schema::Message::user(&text, None)]);
+            if let Err(err) = engine.run(session, &reporter).await {
                 let _ = reporter
                     .send_msg(&format!("❌ Agent 运行崩溃: {}", err))
                     .await;
