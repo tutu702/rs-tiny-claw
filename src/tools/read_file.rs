@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::{
     error::{AppError, Result},
     schema::ToolDefinition,
-    tools::{BaseTool, MAX_CONTENT_LENGTH},
+    tools::{BaseTool, MAX_CONTENT_LENGTH, safe_truncate},
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -61,7 +61,7 @@ impl BaseTool for ReadFileTool {
         if content.len() > MAX_CONTENT_LENGTH {
             return Ok(format!(
                 "{}\n\n...[内容已截断至前 {} 字节]...",
-                &content[..MAX_CONTENT_LENGTH],
+                safe_truncate(&content, MAX_CONTENT_LENGTH),
                 MAX_CONTENT_LENGTH
             ));
         }

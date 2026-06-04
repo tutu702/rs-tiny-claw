@@ -77,3 +77,24 @@ impl Registry for ToolRegistry {
         }
     }
 }
+
+pub fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() < max_bytes {
+        return s;
+    }
+
+    let mut end = s.floor_char_boundary(max_bytes);
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1
+    }
+    &s[..end]
+}
+
+pub fn safe_tail(s: &str, max_bytes: usize) -> &str {
+    if s.len() < max_bytes {
+        return s;
+    }
+
+    let start = s.ceil_char_boundary(s.len() - max_bytes);
+    &s[start..]
+}

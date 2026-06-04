@@ -5,7 +5,7 @@ use tokio::process::Command;
 use crate::{
     error::{AppError, Result},
     schema::ToolDefinition,
-    tools::{BaseTool, MAX_CONTENT_LENGTH},
+    tools::{BaseTool, MAX_CONTENT_LENGTH, safe_truncate},
 };
 
 pub struct BashTool {
@@ -70,7 +70,7 @@ impl BaseTool for BashTool {
                     if res.len() > MAX_CONTENT_LENGTH {
                         res = format!(
                             "{}\n\n...[终端输出过长，已截断至前 {} 字节]...",
-                            &res[..MAX_CONTENT_LENGTH],
+                            safe_truncate(&res, MAX_CONTENT_LENGTH),
                             MAX_CONTENT_LENGTH
                         )
                     }

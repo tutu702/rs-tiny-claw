@@ -18,10 +18,10 @@ use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // let work_dir = env::current_dir()
-    //     .map(|p| p.join("workspace").to_string_lossy().to_string())
-    //     .unwrap_or_else(|_| ".".into());
-    let work_dir = "/tmp/project_front";
+    let work_dir = env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".into());
+    // let work_dir = "/tmp/project_front";
 
     let base_url = std::env::var("OPENAI_BASE_URL")?;
     let model = std::env::var("LLM_MODEL")?;
@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(ReadFileTool::new(&work_dir)));
     // registry.register(Arc::new(WritefileTool::new(&work_dir)));
-    // registry.register(Arc::new(BashTool::new(&work_dir)));
+    registry.register(Arc::new(BashTool::new(&work_dir)));
     // registry.register(Arc::new(EditFileTool::new(&work_dir)));
 
     let engine = Arc::new(AgentEngine::new(
@@ -45,8 +45,8 @@ async fn main() -> Result<()> {
         false,
     ));
 
-    cli_start_with_session(engine).await?;
-    // cli_start(&work_dir, engine).await?;
+    // cli_start_with_session(engine).await?;
+    cli_start(&work_dir, engine).await?;
     // feishu_bot_start(engine).await?;
 
     Ok(())
@@ -103,9 +103,12 @@ async fn run_session_b(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) ->
 
 async fn cli_start(work_dir: &str, engine: Arc<AgentEngine>) -> Result<()> {
     let reporter = TerminalReporter::new();
-    let prompt = r#"我需要在当前目录下新建一个 ping.go，提供一个简单的 http ping 接口。 写完之后，帮我把代码用 git 提交一下。"#;
+    let prompt = r#"请帮我执行以下三个步骤：
+    1. 使用 bash 执行 echo "开始排查日志"
+    2. 使用 read_file 工具读取当前目录下的巨大文件 mock_log.txt
+    3. 使用 bash 执行 date 命令获取当前时间，并告诉我任务全部完成。"#;
 
-    let session = GLOBAL_SESSION_MGR.get_or_create("chat_cli_001", work_dir)?;
+    let session = GLOBAL_SESSION_MGR.get_or_create("test_oom_protection_001", work_dir)?;
     session.append(&[Message::user(prompt, None)])?;
     engine
         .run(session, &reporter)
