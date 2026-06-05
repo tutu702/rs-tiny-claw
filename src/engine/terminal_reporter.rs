@@ -1,4 +1,4 @@
-use crate::engine::reporter::Reporter;
+use crate::{engine::reporter::Reporter, tools::safe_truncate};
 use async_trait::async_trait;
 
 pub struct TerminalReporter {}
@@ -19,7 +19,7 @@ impl Reporter for TerminalReporter {
         let mut display_args = args.replace("\n", "\\n");
         display_args = display_args.replace("\r", "\\r");
         if display_args.len() > 150 {
-            display_args = format!("{} ... (已截断)", &display_args[..150])
+            display_args = format!("{} ... (已截断)", safe_truncate(&display_args, 150))
         }
         println!("    参数: {}\n", display_args)
     }

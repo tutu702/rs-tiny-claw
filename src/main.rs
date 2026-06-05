@@ -1,6 +1,5 @@
-use std::{env, sync::Arc, time::Duration};
-
 use anyhow::Result;
+use clap::Parser;
 use rs_tiny_claw::{
     channel::feishu_bot::FeishuBot,
     engine::{
@@ -14,12 +13,29 @@ use rs_tiny_claw::{
         write_file::WritefileTool,
     },
 };
+use std::{env, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
+
+#[derive(Debug, Parser)]
+#[command(name = "tiny-claw")]
+#[command(version = "1.0")]
+#[command(about, long_about = None)]
+struct Cli {
+    #[arg(short, long)]
+    prompt: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    if cli.prompt.is_empty() {
+        println!("用法: cargo run --prompt \"你的任务指令\"");
+        return Ok(());
+    }
+
     let work_dir = env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| p.join("workspace").to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".into());
     // let work_dir = "/tmp/project_front";
 
@@ -34,19 +50,21 @@ async fn main() -> Result<()> {
 
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(ReadFileTool::new(&work_dir)));
-    // registry.register(Arc::new(WritefileTool::new(&work_dir)));
+    registry.register(Arc::new(WritefileTool::new(&work_dir)));
     registry.register(Arc::new(BashTool::new(&work_dir)));
-    // registry.register(Arc::new(EditFileTool::new(&work_dir)));
+    registry.register(Arc::new(EditFileTool::new(&work_dir)));
 
     let engine = Arc::new(AgentEngine::new(
         provider,
         Arc::new(registry),
         &work_dir,
         false,
+        true,
     ));
 
+    println!("\n>>> 🚀 收到指令: {}\n", cli.prompt);
     // cli_start_with_session(engine).await?;
-    cli_start(&work_dir, engine).await?;
+    cli_start(&work_dir, &cli.prompt, engine).await?;
     // feishu_bot_start(engine).await?;
 
     Ok(())
@@ -101,13 +119,8 @@ async fn run_session_b(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) ->
         .map_err(anyhow::Error::from)
 }
 
-async fn cli_start(work_dir: &str, engine: Arc<AgentEngine>) -> Result<()> {
+async fn cli_start(work_dir: &str, prompt: &str, engine: Arc<AgentEngine>) -> Result<()> {
     let reporter = TerminalReporter::new();
-    let prompt = r#"请帮我执行以下三个步骤：
-    1. 使用 bash 执行 echo "开始排查日志"
-    2. 使用 read_file 工具读取当前目录下的巨大文件 mock_log.txt
-    3. 使用 bash 执行 date 命令获取当前时间，并告诉我任务全部完成。"#;
-
     let session = GLOBAL_SESSION_MGR.get_or_create("test_oom_protection_001", work_dir)?;
     session.append(&[Message::user(prompt, None)])?;
     engine

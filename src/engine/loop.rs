@@ -14,8 +14,9 @@ pub struct AgentEngine {
     registry: Arc<dyn Registry>,
     work_dir: String,
     enable_thinking: bool,
-    composer: PromptComposer,
+    // composer: PromptComposer,
     compactor: Compactor,
+    plan_mode: bool,
 }
 
 impl AgentEngine {
@@ -24,14 +25,16 @@ impl AgentEngine {
         registry: Arc<dyn Registry>,
         work_dir: &str,
         enable_thinking: bool,
+        plan_mode: bool,
     ) -> Self {
         Self {
             provider,
             registry,
             work_dir: work_dir.to_string(),
             enable_thinking,
-            composer: PromptComposer::new(&work_dir),
-            compactor: Compactor::new(3000, 6),
+            // composer: PromptComposer::new(&work_dir, plan_mode),
+            compactor: Compactor::new(20000, 6),
+            plan_mode,
         }
     }
 
@@ -41,12 +44,14 @@ impl AgentEngine {
 
     pub async fn run(&self, session: Arc<Session>, reporter: &dyn Reporter) -> Result<()> {
         println!(
-            "[Engine] 唤醒会话 [{}]，锁定工作区: {}\n",
+            "[Engine] 唤醒会话 [{}]，锁定工作区: {} (PlanMode: {})\n",
             session.id(),
             session.work_dir(),
+            self.plan_mode,
         );
 
-        let system_msg = self.composer.build();
+        let composer = PromptComposer::new(&self.work_dir, self.plan_mode);
+        let system_msg = composer.build()?;
 
         // let mut turn_count = 0;
 
@@ -229,7 +234,7 @@ mod tests {
         let registry = Arc::new(MockRegistry::new());
 
         let work_dir = "/tmp";
-        let engine = AgentEngine::new(provider, registry, work_dir, true);
+        let engine = AgentEngine::new(provider, registry, work_dir, true, false);
 
         let t_reporter = TerminalReporter::new();
         let session = GLOBAL_SESSION_MGR
