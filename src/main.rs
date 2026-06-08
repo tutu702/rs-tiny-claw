@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
         Arc::new(registry),
         &work_dir,
         false,
-        true,
+        false,
     ));
 
     println!("\n>>> 🚀 收到指令: {}\n", cli.prompt);
@@ -90,7 +90,7 @@ async fn run_session_a(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) ->
     // 故意制造大量"废话"对话，刷掉记忆（假设 Working Memory Limit=6）
     for _ in 0..6 {
         session.append(&[Message::user("这只是一句闲聊占位符。", None)])?;
-        session.append(&[Message::assistant("好的，收到闲聊。".into())])?;
+        session.append(&[Message::assistant("好的，收到闲聊。".into(), None)])?;
 
         println!("\n>>> 🙋‍♂️ [Session A / Turn 2]: 请直接告诉我，刚才第一轮你查到的那个密钥是什么？");
         session.append(&[Message::user(
@@ -121,7 +121,7 @@ async fn run_session_b(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) ->
 
 async fn cli_start(work_dir: &str, prompt: &str, engine: Arc<AgentEngine>) -> Result<()> {
     let reporter = TerminalReporter::new();
-    let session = GLOBAL_SESSION_MGR.get_or_create("test_oom_protection_001", work_dir)?;
+    let session = GLOBAL_SESSION_MGR.get_or_create("test_recovery_001", work_dir)?;
     session.append(&[Message::user(prompt, None)])?;
     engine
         .run(session, &reporter)

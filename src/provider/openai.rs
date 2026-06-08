@@ -1,6 +1,9 @@
 use crate::{
     error::{AppError, Result},
-    provider::{ChatMessage, ChatRequest, ChatResponse, ToolFunctionSpec, ToolSpec},
+    provider::{
+        ChatMessage, ChatRequest, ChatResponse, FunctionCall, LlmToolCall, ToolFunctionSpec,
+        ToolSpec,
+    },
     schema::{Message, RoleType, ToolCall, ToolDefinition},
 };
 use async_trait::async_trait;
@@ -43,7 +46,8 @@ impl crate::provider::LlmProvider for OpenaiProvider {
                 RoleType::User => Some(ChatMessage {
                     role: "user".into(),
                     content: Some(msg.content.clone()),
-                    tool_call_id: msg.tool_call_id.clone(),
+                    // user 角色永远不应该带 tool_call_id；强制清空防止上游误填再次触发 400
+                    tool_call_id: None,
                     tool_calls: None,
                 }),
                 RoleType::Assistant => {
@@ -56,12 +60,15 @@ impl crate::provider::LlmProvider for OpenaiProvider {
                     let tool_calls = msg.tool_calls.as_ref().map(|tools| {
                         tools
                             .iter()
-                            .map(|t| ToolSpec {
+                            .map(|t| LlmToolCall {
+                                // 必须把 id 一并回传给 LLM，否则 tool 响应中的 tool_call_id 找不到对应项
+                                id: t.id.clone(),
                                 kind: "function".into(),
-                                function: ToolFunctionSpec {
+                                function: FunctionCall {
                                     name: t.name.clone(),
-                                    description: String::new(),
-                                    parameters: t.arguments.clone(),
+                                    // 关键：assistant 工具调用的 arguments 必须是 JSON 字符串
+                                    arguments: serde_json::to_string(&t.arguments)
+                                        .unwrap_or_else(|_| "null".into()),
                                 },
                             })
                             .collect()
@@ -108,8 +115,8 @@ impl crate::provider::LlmProvider for OpenaiProvider {
         };
 
         // 调试日志：打印请求 JSON
-        let request_json = serde_json::to_string_pretty(&request)
-            .unwrap_or_else(|_| "Failed to serialize request".into());
+        // let request_json = serde_json::to_string_pretty(&request)
+        //     .unwrap_or_else(|_| "Failed to serialize request".into());
         // println!("\n[DEBUG] === LLM Request ===");
         // println!("{}\n", request_json);
 
@@ -127,9 +134,10 @@ impl crate::provider::LlmProvider for OpenaiProvider {
             let body = response.text().await.unwrap_or_default();
             // println!("[DEBUG] === LLM Response Error ===");
             // println!("Status: {}\nBody: {}\n", status, body);
+            // 把响应体一并回传：4xx/5xx 时 OpenAI 通常会带具体的 message/error.code
             return Err(AppError::Generic(format!(
-                "OpenAI API request failed: {}",
-                status
+                "OpenAI API request failed: {} | body: {}",
+                status, body
             )));
         }
 
@@ -140,7 +148,7 @@ impl crate::provider::LlmProvider for OpenaiProvider {
 
         // 调试日志：打印响应 JSON
         // let response_json = serde_json::to_string_pretty(&chat_resp)
-            // .unwrap_or_else(|_| "Failed to serialize response".into());
+        // .unwrap_or_else(|_| "Failed to serialize response".into());
         // println!("[DEBUG] === LLM Response ===");
         // println!("{}\n", response_json);
 

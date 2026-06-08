@@ -29,9 +29,12 @@ pub struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolSpec>>,
+    pub tool_calls: Option<Vec<LlmToolCall>>,
 }
 
+/// 可用工具描述（请求体顶层 `tools` 数组）
+/// schema: `{ "type": "function", "function": { "name", "description", "parameters" } }`
+/// 其中 `parameters` 是 JSON Schema 对象。
 #[derive(Debug, Serialize)]
 pub struct ToolSpec {
     #[serde(rename = "type")]
@@ -45,7 +48,6 @@ pub struct ToolFunctionSpec {
     pub description: String,
     pub parameters: serde_json::Value,
 }
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub choices: Vec<Choice>,

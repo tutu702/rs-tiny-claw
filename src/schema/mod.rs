@@ -35,11 +35,11 @@ impl Message {
         }
     }
 
-    pub fn assistant(content: String) -> Self {
+    pub fn assistant(content: String, tool_calls: Option<Vec<ToolCall>>) -> Self {
         Self {
             role: RoleType::Assistant,
             content: content.into(),
-            tool_calls: None,
+            tool_calls: tool_calls,
             tool_call_id: None,
         }
     }

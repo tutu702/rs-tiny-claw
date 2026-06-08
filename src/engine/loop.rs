@@ -1,5 +1,5 @@
 use crate::{
-    context::{compactor::Compactor, composer::PromptComposer},
+    context::{compactor::Compactor, composer::PromptComposer, recovery::RecoveryManager},
     engine::{reporter::Reporter, session::Session},
     error::{AppError, Result},
     provider::LlmProvider,
@@ -17,6 +17,7 @@ pub struct AgentEngine {
     // composer: PromptComposer,
     compactor: Compactor,
     plan_mode: bool,
+    recovery: RecoveryManager,
 }
 
 impl AgentEngine {
@@ -35,6 +36,7 @@ impl AgentEngine {
             // composer: PromptComposer::new(&work_dir, plan_mode),
             compactor: Compactor::new(20000, 6),
             plan_mode,
+            recovery: RecoveryManager::new(),
         }
     }
 
@@ -66,6 +68,7 @@ impl AgentEngine {
 
             let mut compacted_context = self.compactor.compact(&context_history)?;
 
+            let mut current_turn_thinking_content = String::new();
             if self.enable_thinking {
                 // println!("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...");
                 reporter.on_thinking().await;
@@ -79,7 +82,8 @@ impl AgentEngine {
                     Ok(v) => {
                         if v.content != "" {
                             // println!("🧠 [内部思考 Trace]: {}\n", v.content);
-                            session.append(&[v.clone()])?;
+                            // session.append(&[v.clone()])?;
+                            current_turn_thinking_content.push_str(&v.content);
                             compacted_context.push(v);
                         }
                     }
@@ -118,7 +122,11 @@ impl AgentEngine {
             };
 
             let tool_calls = message.tool_calls.take();
-            session.append(&[message.clone()])?;
+            let final_assistant_msg = Message::assistant(
+                format!("{} \n {}", current_turn_thinking_content, message.content),
+                tool_calls.clone(),
+            );
+            session.append(&[final_assistant_msg])?;
             compacted_context.push(message);
 
             let Some(tool_calls) = tool_calls.filter(|tc| !tc.is_empty()) else {
@@ -132,19 +140,33 @@ impl AgentEngine {
             let mut tasks = Vec::with_capacity(tool_calls.len());
             for (i, tool_call) in tool_calls.into_iter().enumerate() {
                 let args_str = tool_call.arguments.to_string();
+                let tool_name = tool_call.name.clone();
                 reporter.on_tool_call(&tool_call.name, &args_str).await;
 
                 let registry = self.registry.clone();
                 tasks.push(tokio::spawn(async move {
                     let result = registry.execute(&tool_call).await?;
-                    Ok::<_, AppError>((i, result, tool_call.id))
+                    Ok::<_, AppError>((i, result, tool_name, tool_call.id))
                 }));
             }
 
             while let Some(res) = tasks.pop() {
                 match res.await {
-                    Ok(Ok((idx, result, tool_call_id))) => {
-                        let mut display_output = result.output.clone();
+                    Ok(Ok((idx, result, tool_name, tool_call_id))) => {
+                        let mut final_output = result.output.clone();
+                        if result.is_error {
+                            final_output =
+                                self.recovery.analyze_and_inject(&tool_name, &result.output)?;
+                            println!("-> [Go-{}] ❌ 注入救援指南: {}\n", idx, final_output);
+                        } else {
+                            println!(
+                                " -> [Go-{}] ✅ 工具执行成功 (返回 {} 字节)\n",
+                                idx,
+                                result.output.len(),
+                            );
+                        }
+
+                        let mut display_output = final_output.clone();
                         if display_output.len() > 200 {
                             display_output =
                                 format!("{}... (已截断)", safe_truncate(&display_output, 200));
@@ -152,7 +174,8 @@ impl AgentEngine {
                         reporter
                             .on_tool_result(&result.tool_call_id, &display_output, result.is_error)
                             .await;
-                        observation_msgs[idx] = Message::user(&result.output, Some(tool_call_id));
+                        // 喂给 LLM 的是注入救援指南后的内容，且必须是 role=tool 消息
+                        observation_msgs[idx] = Message::tool(&final_output, &tool_call_id);
                     }
                     Ok(Err(e)) => return Err(e),
                     Err(e) => {
