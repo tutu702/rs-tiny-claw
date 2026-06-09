@@ -20,3 +20,5 @@ openlark = { version = "0.16.1", default-features = false, features = [
 ] }
 walkdir = "2.5.0"
 clap = { version = "4.6.1", features = ["derive"] }
+hex = "0.4.3"
+md-5 = "0.11.0"
