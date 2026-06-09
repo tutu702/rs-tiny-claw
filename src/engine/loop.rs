@@ -1,12 +1,12 @@
 use crate::{
     context::{compactor::Compactor, composer::PromptComposer, recovery::RecoveryManager},
-    engine::{reporter::Reporter, session::Session},
+    engine::{reminder::ReminderInjector, reporter::Reporter, session::Session},
     error::{AppError, Result},
     provider::LlmProvider,
-    schema::Message,
+    schema::{Message, ToolCall, ToolResult},
     tools::{Registry, safe_truncate},
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
 pub struct AgentEngine {
@@ -18,6 +18,7 @@ pub struct AgentEngine {
     compactor: Compactor,
     plan_mode: bool,
     recovery: RecoveryManager,
+    injector: StdMutex<ReminderInjector>,
 }
 
 impl AgentEngine {
@@ -37,6 +38,7 @@ impl AgentEngine {
             compactor: Compactor::new(20000, 6),
             plan_mode,
             recovery: RecoveryManager::new(),
+            injector: StdMutex::new(ReminderInjector::new()),
         }
     }
 
@@ -138,6 +140,7 @@ impl AgentEngine {
 
             let mut observation_msgs = vec![Message::user("", None); tool_calls.len()];
             let mut tasks = Vec::with_capacity(tool_calls.len());
+
             for (i, tool_call) in tool_calls.into_iter().enumerate() {
                 let args_str = tool_call.arguments.to_string();
                 let tool_name = tool_call.name.clone();
@@ -146,17 +149,19 @@ impl AgentEngine {
                 let registry = self.registry.clone();
                 tasks.push(tokio::spawn(async move {
                     let result = registry.execute(&tool_call).await?;
-                    Ok::<_, AppError>((i, result, tool_name, tool_call.id))
+                    Ok::<_, AppError>((i, result, tool_name, tool_call))
                 }));
             }
 
+            let mut last_tool_call: Option<ToolCall> = None;
+            let mut last_result: Option<ToolResult> = None;
             while let Some(res) = tasks.pop() {
                 match res.await {
-                    Ok(Ok((idx, result, tool_name, tool_call_id))) => {
+                    Ok(Ok((idx, result, tool_name, tool_call))) => {
                         let mut final_output = result.output.clone();
                         if result.is_error {
                             final_output =
-                                self.recovery.analyze_and_inject(&tool_name, &result.output)?;
+                                self.recovery.analyze_and_inject(&tool_name, &result.output);
                             println!("-> [Go-{}] ❌ 注入救援指南: {}\n", idx, final_output);
                         } else {
                             println!(
@@ -175,7 +180,11 @@ impl AgentEngine {
                             .on_tool_result(&result.tool_call_id, &display_output, result.is_error)
                             .await;
                         // 喂给 LLM 的是注入救援指南后的内容，且必须是 role=tool 消息
-                        observation_msgs[idx] = Message::tool(&final_output, &tool_call_id);
+                        observation_msgs[idx] = Message::tool(&final_output, &tool_call.id);
+                        if idx == 0 {
+                            last_tool_call = Some(tool_call);
+                            last_result = Some(result);
+                        }
                     }
                     Ok(Err(e)) => return Err(e),
                     Err(e) => {
@@ -188,6 +197,14 @@ impl AgentEngine {
             }
 
             session.append(&observation_msgs)?;
+
+            if let (Some(tool_call), Some(res)) = (last_tool_call.as_ref(), last_result.as_ref()) {
+                let mut injector = self.injector.lock().expect("injector mutex poisoned");
+                if let Some(reminder_msg) = injector.check_and_inject(tool_call, &res) {
+                    session.append(&[reminder_msg])?;
+                }
+            }
+
             // for msg in observation_msgs {
             //     context_history.push(msg)
             // }
@@ -257,7 +274,7 @@ mod tests {
         let registry = Arc::new(MockRegistry::new());
 
         let work_dir = "/tmp";
-        let engine = AgentEngine::new(provider, registry, work_dir, true, false);
+        let mut engine = AgentEngine::new(provider, registry, work_dir, true, false);
 
         let t_reporter = TerminalReporter::new();
         let session = GLOBAL_SESSION_MGR

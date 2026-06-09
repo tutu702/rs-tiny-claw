@@ -7,7 +7,7 @@ impl RecoveryManager {
         Self {}
     }
 
-    pub fn analyze_and_inject(&self, tool_name: &str, raw_error: &str) -> Result<String> {
+    pub fn analyze_and_inject(&self, tool_name: &str, raw_error: &str) -> String {
         let mut hint = String::new();
         let lower_error = raw_error.to_lowercase();
 
@@ -47,9 +47,9 @@ impl RecoveryManager {
         }
 
         if hint.is_empty() {
-            return Ok(raw_error.to_string());
+            return raw_error.to_string();
         }
 
-        Ok(hint)
+        hint
     }
 }
