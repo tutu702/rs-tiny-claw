@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -12,6 +13,10 @@ pub mod write_file;
 
 pub const MAX_CONTENT_LENGTH: usize = 8000;
 
+pub type MiddlewareFunc = Box<
+    dyn Fn(ToolCall) -> Pin<Box<dyn Future<Output = (bool, String)> + Send>> + Send + Sync,
+>;
+
 #[async_trait]
 pub trait BaseTool: Send + Sync {
     fn name(&self) -> &str;
@@ -23,17 +28,20 @@ pub trait BaseTool: Send + Sync {
 pub trait Registry: Send + Sync {
     fn register(&mut self, tool: Arc<dyn BaseTool>);
     fn get_available_tools(&self) -> Vec<ToolDefinition>;
+    fn use_mw(&mut self, mw: MiddlewareFunc);
     async fn execute(&self, call: &ToolCall) -> Result<ToolResult>;
 }
 
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn BaseTool>>,
+    middlewares: Vec<MiddlewareFunc>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            middlewares: Vec::new(),
         }
     }
 }
@@ -53,6 +61,10 @@ impl Registry for ToolRegistry {
         self.tools.values().map(|t| t.definition()).collect()
     }
 
+    fn use_mw(&mut self, mw: MiddlewareFunc) {
+        self.middlewares.push(mw);
+    }
+
     async fn execute(&self, call: &ToolCall) -> Result<ToolResult> {
         let Some(tool) = self.tools.get(&call.name) else {
             return Ok(ToolResult {
@@ -61,6 +73,21 @@ impl Registry for ToolRegistry {
                 is_error: true,
             });
         };
+
+        for mw in &self.middlewares {
+            let (allowed, reason) = mw(call.clone()).await;
+            if !allowed {
+                println!(
+                    "[Registry] ⚠️ 工具 {} 被 Middleware 拦截: {}\n",
+                    call.name, reason
+                );
+                return Ok(ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: format!("执行被系统拦截。原因: {}", reason),
+                    is_error: true,
+                });
+            }
+        }
 
         let output = tool.execute(call.arguments.clone()).await;
         match output {

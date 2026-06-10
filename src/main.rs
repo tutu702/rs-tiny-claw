@@ -1,13 +1,16 @@
 use anyhow::Result;
 use clap::Parser;
 use rs_tiny_claw::{
-    channel::feishu_bot::FeishuBot,
+    channel::{
+        feishu_approval::{self, GLOBAL_APPROVAL_MGR},
+        feishu_bot::{self, FeishuBot, FeishuReporter},
+    },
     engine::{
         r#loop::AgentEngine, reporter::Reporter, session::GLOBAL_SESSION_MGR,
         terminal_reporter::TerminalReporter,
     },
     provider::openai::OpenaiProvider,
-    schema::Message,
+    schema::{Message, ToolCall},
     tools::{
         Registry, ToolRegistry, bash::BashTool, edit_file::EditFileTool, read_file::ReadFileTool,
         write_file::WritefileTool,
@@ -22,17 +25,12 @@ use tokio::sync::Mutex;
 #[command(about, long_about = None)]
 struct Cli {
     #[arg(short, long)]
-    prompt: String,
+    prompt: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-
-    if cli.prompt.is_empty() {
-        println!("用法: cargo run --prompt \"你的任务指令\"");
-        return Ok(());
-    }
 
     let work_dir = env::current_dir()
         .map(|p| p.join("workspace").to_string_lossy().to_string())
@@ -45,6 +43,25 @@ async fn main() -> Result<()> {
 
     println!("work_dir: {work_dir}");
 
+    println!("\n>>> 🚀 收到指令: {:?}\n", cli.prompt);
+
+    feishu_bot_start(&base_url, &model, &api_key, &work_dir).await?;
+    // cli_run(&base_url, &model, &api_key, &work_dir, &cli.prompt.unwrap());
+
+    Ok(())
+}
+
+async fn cli_run(
+    base_url: &str,
+    model: &str,
+    api_key: &str,
+    work_dir: &str,
+    prompt: &str,
+) -> Result<()> {
+    if prompt.is_empty() {
+        println!("用法: cargo run --prompt \"你的任务指令\"");
+        return Ok(());
+    }
     let llm_provider = OpenaiProvider::new(&base_url, &model, &api_key);
     let provider = Arc::new(Mutex::new(llm_provider));
 
@@ -62,11 +79,8 @@ async fn main() -> Result<()> {
         false,
     ));
 
-    println!("\n>>> 🚀 收到指令: {}\n", cli.prompt);
     // cli_start_with_session(engine).await?;
-    cli_start(&work_dir, &cli.prompt, engine).await?;
-    // feishu_bot_start(engine).await?;
-
+    cli_start(&work_dir, &prompt, engine).await?;
     Ok(())
 }
 
@@ -129,10 +143,70 @@ async fn cli_start(work_dir: &str, prompt: &str, engine: Arc<AgentEngine>) -> Re
         .map_err(anyhow::Error::from)
 }
 
-async fn feishu_bot_start(engine: Arc<AgentEngine>) -> Result<()> {
+async fn feishu_bot_start(
+    base_url: &str,
+    model: &str,
+    api_key: &str,
+    work_dir: &str,
+) -> Result<()> {
     let app_id = std::env::var("FEISHU_APP_ID")?;
     let app_secret = std::env::var("FEISHU_APP_SECRET")?;
-    let base_url = std::env::var("FEISHU_BASE_URL")?;
-    let bot = Arc::new(FeishuBot::new(&app_id, &app_secret, &base_url, engine));
+    let feishu_base_url = std::env::var("FEISHU_BASE_URL")?;
+
+    let session_id = "test_command_intercept_001";
+    let sess = GLOBAL_SESSION_MGR.get_or_create(session_id, work_dir)?;
+    sess.append(&[Message::user("", None)])?;
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Arc::new(ReadFileTool::new(&work_dir)));
+    registry.register(Arc::new(WritefileTool::new(&work_dir)));
+    registry.register(Arc::new(BashTool::new(&work_dir)));
+    registry.register(Arc::new(EditFileTool::new(&work_dir)));
+
+    let reporter: Arc<Mutex<Option<FeishuReporter>>> = Arc::new(Mutex::new(None));
+    let reporter_mw = Arc::clone(&reporter);
+    registry.use_mw(Box::new(move |call| {
+        let reporter_slot = Arc::clone(&reporter_mw);
+        Box::pin(async move {
+            let args_str = call.arguments.to_string();
+
+            // 检查是否命中高危特征库
+            if feishu_approval::is_dangerous_command(&call.name, &args_str) {
+                let task_id = call.id;
+                let reporter = reporter_slot.lock().await.clone();
+                // 这里还没拿到 bot,审批消息先发到控制台(feishu_approval.rs 的 None 分支)
+                let (allowed, reason) = GLOBAL_APPROVAL_MGR
+                    .wait_for_approval(&task_id, &call.name, &args_str, reporter)
+                    .await
+                    .unwrap_or((false, "审批调用失败".to_string()));
+                if !allowed {
+                    // 拒绝,将理由传回给大模型
+                    return (false, reason);
+                }
+            }
+
+            (true, String::new())
+        })
+    }));
+
+    let llm_provider = OpenaiProvider::new(&base_url, &model, &api_key);
+    let provider = Arc::new(Mutex::new(llm_provider));
+    let engine = Arc::new(AgentEngine::new(
+        provider,
+        Arc::new(registry),
+        &work_dir,
+        false,
+        false,
+    ));
+
+    let bot = Arc::new(FeishuBot::new(
+        &app_id,
+        &app_secret,
+        &feishu_base_url,
+        engine,
+        sess,
+        reporter,
+    ));
+
     bot.start_websocket().await.map_err(anyhow::Error::from)
 }

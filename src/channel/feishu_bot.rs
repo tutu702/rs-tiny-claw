@@ -6,9 +6,11 @@ use open_lark::ws_client::LarkWsClient;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
-use crate::engine::session::GLOBAL_SESSION_MGR;
+use crate::channel::feishu_approval::GLOBAL_APPROVAL_MGR;
+use crate::engine::session::Session;
 use crate::error::AppError;
 use crate::schema;
 use crate::{
@@ -17,11 +19,13 @@ use crate::{
 };
 
 pub struct FeishuBot {
-    client: Arc<open_lark::Client>,
+    pub client: Arc<open_lark::Client>,
     app_id: String,
     app_secret: String,
     base_url: String,
     engine: Arc<AgentEngine>,
+    sess: Arc<Session>,
+    reporter: Arc<Mutex<Option<FeishuReporter>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,18 +78,29 @@ struct TextContent {
 }
 
 impl FeishuBot {
-    pub fn new(app_id: &str, app_secret: &str, base_url: &str, eng: Arc<AgentEngine>) -> Self {
-        let client = open_lark::Client::builder()
-            .app_id(app_id)
-            .app_secret(app_secret)
-            .build()
-            .expect("客户端初始化失败");
+    pub fn new(
+        app_id: &str,
+        app_secret: &str,
+        base_url: &str,
+        eng: Arc<AgentEngine>,
+        sess: Arc<Session>,
+        reporter: Arc<Mutex<Option<FeishuReporter>>>,
+    ) -> Self {
+        let client = Arc::new(
+            open_lark::Client::builder()
+                .app_id(app_id)
+                .app_secret(app_secret)
+                .build()
+                .expect("客户端初始化失败"),
+        );
         Self {
-            client: Arc::new(client),
+            client: Arc::clone(&client),
             app_id: app_id.to_string(),
             app_secret: app_secret.to_string(),
             base_url: base_url.to_string(),
             engine: eng,
+            sess,
+            reporter,
         }
     }
 
@@ -178,13 +193,33 @@ impl FeishuBot {
         let chat_id = msg.chat_id.unwrap_or_default();
         println!("[Feishu] 收到会话 {} 消息: {}", chat_id, text);
 
+        // 【新增】：拦截人工审批的特殊口令
+        if text.starts_with("approve ") {
+            let task_id = text.trim_start_matches("approve ");
+            let _ = GLOBAL_APPROVAL_MGR.resolve_approval(task_id, true, "人类管理员已批准操作");
+            return;
+        }
+
+        if text.starts_with("reject ") {
+            let task_id = text.trim_start_matches("reject ");
+            let _ = GLOBAL_APPROVAL_MGR.resolve_approval(
+                task_id,
+                false,
+                "人类管理员认为该操作存在极高风险，已无情拒绝",
+            );
+
+            println!("[Feishu] 会话 {}: 🚫 已拒绝任务 {}", chat_id, task_id);
+            return;
+        }
+
         let engine = Arc::clone(&self.engine);
         let client = Arc::clone(&self.client);
+        let sess = Arc::clone(&self.sess);
+        let reporter = FeishuReporter::new(&chat_id, client);
+        *self.reporter.lock().await = Some(reporter.clone());
         tokio::spawn(async move {
-            let reporter = FeishuReporter::new(&chat_id, client);
-            let session = GLOBAL_SESSION_MGR.get_or_create(&chat_id, "/tmp").unwrap();
-            let _ = session.append(&[schema::Message::user(&text, None)]);
-            if let Err(err) = engine.run(session, &reporter).await {
+            let _ = sess.append(&[schema::Message::user(&text, None)]);
+            if let Err(err) = engine.run(sess, &reporter).await {
                 let _ = reporter
                     .send_msg(&format!("❌ Agent 运行崩溃: {}", err))
                     .await;
@@ -205,11 +240,17 @@ impl FeishuBot {
                 .await;
         }
     }
+
+    pub async fn reporter(&self) -> Option<FeishuReporter> {
+        let r = self.reporter.lock().await;
+        r.clone()
+    }
 }
 
+#[derive(Clone)]
 pub struct FeishuReporter {
-    client: Arc<open_lark::Client>,
-    chat_id: String,
+    pub client: Arc<open_lark::Client>,
+    pub chat_id: String,
 }
 
 impl FeishuReporter {

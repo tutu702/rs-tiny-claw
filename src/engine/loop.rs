@@ -220,6 +220,7 @@ mod tests {
         engine::{session::GLOBAL_SESSION_MGR, terminal_reporter::TerminalReporter},
         provider::openai::OpenaiProvider,
         schema::*,
+        tools::MiddlewareFunc,
     };
 
     struct MockRegistry {}
@@ -237,6 +238,8 @@ mod tests {
     #[async_trait::async_trait]
     impl Registry for MockRegistry {
         fn register(&mut self, _tool: Arc<dyn crate::tools::BaseTool>) {}
+
+        fn use_mw(&mut self, _mw: MiddlewareFunc) {}
 
         fn get_available_tools(&self) -> Vec<ToolDefinition> {
             vec![ToolDefinition {
@@ -274,7 +277,7 @@ mod tests {
         let registry = Arc::new(MockRegistry::new());
 
         let work_dir = "/tmp";
-        let mut engine = AgentEngine::new(provider, registry, work_dir, true, false);
+        let engine = AgentEngine::new(provider, registry, work_dir, true, false);
 
         let t_reporter = TerminalReporter::new();
         let session = GLOBAL_SESSION_MGR
