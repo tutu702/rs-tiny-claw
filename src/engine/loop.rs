@@ -1,11 +1,16 @@
 use crate::{
     context::{compactor::Compactor, composer::PromptComposer, recovery::RecoveryManager},
-    engine::{reminder::ReminderInjector, reporter::Reporter, session::Session},
+    engine::{
+        reminder::ReminderInjector,
+        reporter::{self, Reporter},
+        session::Session,
+    },
     error::{AppError, Result},
     provider::LlmProvider,
     schema::{Message, ToolCall, ToolResult},
-    tools::{Registry, safe_truncate},
+    tools::{Registry, safe_truncate, subagent::AgentRunner},
 };
+use async_trait::async_trait;
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
@@ -44,6 +49,10 @@ impl AgentEngine {
 
     pub fn get_work_dir(&self) -> &str {
         &self.work_dir
+    }
+
+    pub fn set_registry(&mut self, r: Arc<dyn Registry>) {
+        self.registry = r;
     }
 
     pub async fn run(&self, session: Arc<Session>, reporter: &dyn Reporter) -> Result<()> {
@@ -99,7 +108,7 @@ impl AgentEngine {
             }
 
             // println!("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...");
-            let available_tools = self.registry.get_available_tools();
+            let available_tools = self.registry.get_available_tools().await;
             let response = {
                 let mut provider = self.provider.lock().await;
                 provider
@@ -142,14 +151,14 @@ impl AgentEngine {
             let mut tasks = Vec::with_capacity(tool_calls.len());
 
             for (i, tool_call) in tool_calls.into_iter().enumerate() {
-                let args_str = tool_call.arguments.to_string();
-                let tool_name = tool_call.name.clone();
-                reporter.on_tool_call(&tool_call.name, &args_str).await;
+                reporter
+                    .on_tool_call(&tool_call.name, &tool_call.arguments.to_string())
+                    .await;
 
                 let registry = self.registry.clone();
                 tasks.push(tokio::spawn(async move {
                     let result = registry.execute(&tool_call).await?;
-                    Ok::<_, AppError>((i, result, tool_name, tool_call))
+                    Ok::<_, AppError>((i, result, tool_call))
                 }));
             }
 
@@ -157,11 +166,12 @@ impl AgentEngine {
             let mut last_result: Option<ToolResult> = None;
             while let Some(res) = tasks.pop() {
                 match res.await {
-                    Ok(Ok((idx, result, tool_name, tool_call))) => {
+                    Ok(Ok((idx, result, tool_call))) => {
                         let mut final_output = result.output.clone();
                         if result.is_error {
-                            final_output =
-                                self.recovery.analyze_and_inject(&tool_name, &result.output);
+                            final_output = self
+                                .recovery
+                                .analyze_and_inject(&tool_call.name, &result.output);
                             println!("-> [Go-{}] ❌ 注入救援指南: {}\n", idx, final_output);
                         } else {
                             println!(
@@ -213,6 +223,118 @@ impl AgentEngine {
     }
 }
 
+#[async_trait]
+impl AgentRunner for AgentEngine {
+    async fn run_sub(
+        &self,
+        task_prompt: &str,
+        read_only_registry: &dyn Registry,
+        reporter: &dyn Reporter,
+    ) -> Result<String> {
+        // 【核心优化】：子智能体极其容易偷懒。我们必须在 System Prompt 中严厉警告它必须使用工具！
+        let mut context_history = vec![Message::system("你是一个专门负责深度探索的探路者 (Explorer Subagent)。
+你的任务是根据主架构师的指令，在当前工作区内仔细阅读代码、查阅日志，搜集足够的信息。
+【核心纪律】
+1. 你必须、且只能依靠内置工具（如 bash 的 find/grep，或 read_file）去寻找答案。绝对不允许凭空捏造或猜测！
+2. 如果你没有找到确切的答案，你必须继续使用工具深入搜索。
+3. 当且仅当你找到了确切的线索后，停止调用工具，直接输出一段纯文本作为你的终极汇报。主架构师会根据你的汇报来做下一步决策。"),
+        Message::user(task_prompt, None),
+];
+        // 限制子智能体最多只能跑 10 个 Turn，防止它自己卡死
+        const MAX_SUB_TRUNS: u8 = 10;
+        let mut turn_count: u8 = 0;
+
+        loop {
+            turn_count += 1;
+            if turn_count > MAX_SUB_TRUNS {
+                return Err(AppError::Generic(format!(
+                    "子智能体探索过于深入，超过 {} 轮被强制召回，请主 Agent 给它更明确的指令",
+                    MAX_SUB_TRUNS
+                )));
+            }
+
+            let available_tools = read_only_registry.get_available_tools().await;
+            let compacted_context = self.compactor.compact(&context_history)?;
+
+            let response = {
+                let mut provider = self.provider.lock().await;
+                provider
+                    .generate(&compacted_context, Some(available_tools))
+                    .await
+            };
+
+            let mut message = match response {
+                Ok(v) => v,
+                Err(err) => return Err(AppError::Generic(format!("子智能体推理失败: {}", err))),
+            };
+
+            let tool_calls = message.tool_calls.take();
+            let Some(tool_calls) = tool_calls.filter(|tc| !tc.is_empty()) else {
+                // 直接将它的这段汇报内容剥离出来返回给上层
+                return Ok(message.content);
+            };
+
+            context_history.push(message);
+
+            // 执行只读工具的并发循环
+            let mut observation_msgs = vec![Message::user("", None); tool_calls.len()];
+            let mut task = Vec::with_capacity(tool_calls.len());
+
+            for (i, tool_call) in tool_calls.into_iter().enumerate() {
+                reporter
+                    .on_tool_call(
+                        &format!("[Subagent] {}", tool_call.name),
+                        &tool_call.arguments.to_string(),
+                    )
+                    .await;
+                let registry = self.registry.clone();
+                task.push(tokio::spawn(async move {
+                    let result = registry.execute(&tool_call).await?;
+                    Ok::<_, AppError>((i, result, tool_call))
+                }));
+            }
+
+            while let Some(res) = task.pop() {
+                match res.await {
+                    Ok(Ok((idx, result, tool_call))) => {
+                        let mut final_output = result.output.clone();
+                        if result.is_error {
+                            final_output = self
+                                .recovery
+                                .analyze_and_inject(&tool_call.name, &result.output)
+                        }
+
+                        let mut display_output = final_output.clone();
+                        if display_output.len() > 200 {
+                            display_output =
+                                format!("{}... (已截断)", safe_truncate(&display_output, 200));
+                        }
+
+                        reporter
+                            .on_tool_result(
+                                &format!("[Subagent] {}", tool_call.name),
+                                &display_output,
+                                result.is_error,
+                            )
+                            .await;
+
+                        observation_msgs[idx] = Message::user(&final_output, Some(tool_call.id));
+                    }
+                    Ok(Err(err)) => return Err(err),
+                    Err(err) => {
+                        return Err(AppError::Generic(format!(
+                            "任务执行失败: {}",
+                            err.to_string()
+                        )));
+                    }
+                }
+            }
+
+            context_history.extend_from_slice(&observation_msgs);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,11 +359,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Registry for MockRegistry {
-        fn register(&mut self, _tool: Arc<dyn crate::tools::BaseTool>) {}
+        async fn register(&self, _tool: Arc<dyn crate::tools::BaseTool>) {}
 
-        fn use_mw(&mut self, _mw: MiddlewareFunc) {}
+        async fn use_mw(&self, _mw: MiddlewareFunc) {}
 
-        fn get_available_tools(&self) -> Vec<ToolDefinition> {
+        async fn get_available_tools(&self) -> Vec<ToolDefinition> {
             vec![ToolDefinition {
                 name: "get_weather".into(),
                 description: "获取指定城市的当前天气情况。".into(),

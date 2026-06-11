@@ -12,7 +12,11 @@ use rs_tiny_claw::{
     provider::openai::OpenaiProvider,
     schema::{Message, ToolCall},
     tools::{
-        Registry, ToolRegistry, bash::BashTool, edit_file::EditFileTool, read_file::ReadFileTool,
+        Registry, ToolRegistry,
+        bash::BashTool,
+        edit_file::EditFileTool,
+        read_file::ReadFileTool,
+        subagent::{AgentRunner, SubAgentTool},
         write_file::WritefileTool,
     },
 };
@@ -45,8 +49,8 @@ async fn main() -> Result<()> {
 
     println!("\n>>> 🚀 收到指令: {:?}\n", cli.prompt);
 
-    feishu_bot_start(&base_url, &model, &api_key, &work_dir).await?;
-    // cli_run(&base_url, &model, &api_key, &work_dir, &cli.prompt.unwrap());
+    // feishu_bot_start(&base_url, &model, &api_key, &work_dir).await?;
+    cli_run(&base_url, &model, &api_key, &work_dir, &cli.prompt.unwrap()).await?;
 
     Ok(())
 }
@@ -65,19 +69,42 @@ async fn cli_run(
     let llm_provider = OpenaiProvider::new(&base_url, &model, &api_key);
     let provider = Arc::new(Mutex::new(llm_provider));
 
-    let mut registry = ToolRegistry::new();
-    registry.register(Arc::new(ReadFileTool::new(&work_dir)));
-    registry.register(Arc::new(WritefileTool::new(&work_dir)));
-    registry.register(Arc::new(BashTool::new(&work_dir)));
-    registry.register(Arc::new(EditFileTool::new(&work_dir)));
+    // 【防御沙箱】为子智能体准备受限的只读注册表
+    let read_only_registry = ToolRegistry::new();
+    read_only_registry
+        .register(Arc::new(ReadFileTool::new(work_dir)))
+        .await;
+    read_only_registry
+        .register(Arc::new(BashTool::new(&work_dir)))
+        .await;
+
+    let registry = Arc::new(ToolRegistry::new());
+    registry
+        .register(Arc::new(ReadFileTool::new(&work_dir)))
+        .await;
+    registry
+        .register(Arc::new(WritefileTool::new(&work_dir)))
+        .await;
+    registry.register(Arc::new(BashTool::new(&work_dir))).await;
+    registry
+        .register(Arc::new(EditFileTool::new(&work_dir)))
+        .await;
 
     let engine = Arc::new(AgentEngine::new(
         provider,
-        Arc::new(registry),
+        Arc::clone(&registry) as Arc<dyn Registry>,
         &work_dir,
         false,
         false,
     ));
+
+    registry
+        .register(Arc::new(SubAgentTool::new(
+            Arc::clone(&engine) as Arc<dyn AgentRunner>,
+            Box::new(read_only_registry),
+            Box::new(TerminalReporter::new()),
+        )))
+        .await;
 
     // cli_start_with_session(engine).await?;
     cli_start(&work_dir, &prompt, engine).await?;
@@ -135,7 +162,7 @@ async fn run_session_b(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) ->
 
 async fn cli_start(work_dir: &str, prompt: &str, engine: Arc<AgentEngine>) -> Result<()> {
     let reporter = TerminalReporter::new();
-    let session = GLOBAL_SESSION_MGR.get_or_create("test_recovery_001", work_dir)?;
+    let session = GLOBAL_SESSION_MGR.get_or_create("test_subagent_001", work_dir)?;
     session.append(&[Message::user(prompt, None)])?;
     engine
         .run(session, &reporter)
@@ -157,37 +184,45 @@ async fn feishu_bot_start(
     let sess = GLOBAL_SESSION_MGR.get_or_create(session_id, work_dir)?;
     sess.append(&[Message::user("", None)])?;
 
-    let mut registry = ToolRegistry::new();
-    registry.register(Arc::new(ReadFileTool::new(&work_dir)));
-    registry.register(Arc::new(WritefileTool::new(&work_dir)));
-    registry.register(Arc::new(BashTool::new(&work_dir)));
-    registry.register(Arc::new(EditFileTool::new(&work_dir)));
+    let registry = ToolRegistry::new();
+    registry
+        .register(Arc::new(ReadFileTool::new(&work_dir)))
+        .await;
+    registry
+        .register(Arc::new(WritefileTool::new(&work_dir)))
+        .await;
+    registry.register(Arc::new(BashTool::new(&work_dir))).await;
+    registry
+        .register(Arc::new(EditFileTool::new(&work_dir)))
+        .await;
 
     let reporter: Arc<Mutex<Option<FeishuReporter>>> = Arc::new(Mutex::new(None));
     let reporter_mw = Arc::clone(&reporter);
-    registry.use_mw(Box::new(move |call| {
-        let reporter_slot = Arc::clone(&reporter_mw);
-        Box::pin(async move {
-            let args_str = call.arguments.to_string();
+    registry
+        .use_mw(Box::new(move |call| {
+            let reporter_slot = Arc::clone(&reporter_mw);
+            Box::pin(async move {
+                let args_str = call.arguments.to_string();
 
-            // 检查是否命中高危特征库
-            if feishu_approval::is_dangerous_command(&call.name, &args_str) {
-                let task_id = call.id;
-                let reporter = reporter_slot.lock().await.clone();
-                // 这里还没拿到 bot,审批消息先发到控制台(feishu_approval.rs 的 None 分支)
-                let (allowed, reason) = GLOBAL_APPROVAL_MGR
-                    .wait_for_approval(&task_id, &call.name, &args_str, reporter)
-                    .await
-                    .unwrap_or((false, "审批调用失败".to_string()));
-                if !allowed {
-                    // 拒绝,将理由传回给大模型
-                    return (false, reason);
+                // 检查是否命中高危特征库
+                if feishu_approval::is_dangerous_command(&call.name, &args_str) {
+                    let task_id = call.id;
+                    let reporter = reporter_slot.lock().await.clone();
+                    // 这里还没拿到 bot,审批消息先发到控制台(feishu_approval.rs 的 None 分支)
+                    let (allowed, reason) = GLOBAL_APPROVAL_MGR
+                        .wait_for_approval(&task_id, &call.name, &args_str, reporter)
+                        .await
+                        .unwrap_or((false, "审批调用失败".to_string()));
+                    if !allowed {
+                        // 拒绝,将理由传回给大模型
+                        return (false, reason);
+                    }
                 }
-            }
 
-            (true, String::new())
-        })
-    }));
+                (true, String::new())
+            })
+        }))
+        .await;
 
     let llm_provider = OpenaiProvider::new(&base_url, &model, &api_key);
     let provider = Arc::new(Mutex::new(llm_provider));
