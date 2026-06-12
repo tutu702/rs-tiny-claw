@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::schema::{Message, ToolDefinition};
+use crate::schema::{Message, ToolDefinition, Usage};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,7 @@ pub struct ToolFunctionSpec {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub choices: Vec<Choice>,
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

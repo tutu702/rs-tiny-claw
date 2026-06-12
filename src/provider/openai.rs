@@ -148,7 +148,7 @@ impl crate::provider::LlmProvider for OpenaiProvider {
 
         // 调试日志：打印响应 JSON
         // let response_json = serde_json::to_string_pretty(&chat_resp)
-        // .unwrap_or_else(|_| "Failed to serialize response".into());
+        //     .unwrap_or_else(|_| "Failed to serialize response".into());
         // println!("[DEBUG] === LLM Response ===");
         // println!("{}\n", response_json);
 
@@ -170,11 +170,10 @@ impl crate::provider::LlmProvider for OpenaiProvider {
                 .collect()
         });
 
-        Ok(Message {
-            role: RoleType::Assistant,
-            content: choice.message.content.unwrap_or_default(),
+        Ok(Message::assistant(
+            choice.message.content.unwrap_or_default(),
             tool_calls,
-            tool_call_id: None,
-        })
+            chat_resp.usage,
+        ))
     }
 }

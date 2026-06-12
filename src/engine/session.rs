@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, LazyLock, RwLock},
+    sync::{Arc, LazyLock, Mutex, RwLock},
     time::SystemTime,
 };
 
@@ -10,12 +10,19 @@ use crate::{
     schema::{Message, RoleType},
 };
 
+#[derive(Debug, Default)]
+pub struct SessionUsage {
+    total_prompt_tokens: u64,
+    total_completion_tokens: u64,
+    total_cost_cny: f64,
+}
 pub struct Session {
     id: String,
     work_dir: String,
     history: RwLock<Vec<Message>>,
     created_at: SystemTime,
     updated_at: RwLock<SystemTime>,
+    usage: Mutex<SessionUsage>,
 }
 
 impl Session {
@@ -27,6 +34,7 @@ impl Session {
             history: RwLock::new(Vec::new()),
             created_at: now,
             updated_at: RwLock::new(now),
+            usage: Mutex::new(SessionUsage::default()),
         }
     }
 
@@ -71,6 +79,28 @@ impl Session {
             .skip_while(|m| m.role == RoleType::User && m.tool_call_id.is_some())
             .cloned()
             .collect())
+    }
+
+    pub fn record_usage(&self, prompt: u64, completion: u64, cost: f64) {
+        let mut usage = self.usage.lock().unwrap();
+        usage.total_prompt_tokens += prompt;
+        usage.total_completion_tokens += completion;
+        usage.total_cost_cny += cost;
+    }
+
+    pub fn get_total_prompt_tokens(&self) -> u64 {
+        let usage = self.usage.lock().unwrap();
+        usage.total_prompt_tokens
+    }
+
+    pub fn get_total_completion_tokens(&self) -> u64 {
+        let usage = self.usage.lock().unwrap();
+        usage.total_completion_tokens
+    }
+
+    pub fn get_total_cost(&self) -> f64 {
+        let usage = self.usage.lock().unwrap();
+        usage.total_cost_cny
     }
 }
 

@@ -9,11 +9,17 @@ pub enum RoleType {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Message {
     pub role: RoleType,
     pub content: String,
     pub tool_calls: Option<Vec<ToolCall>>,
     pub tool_call_id: Option<String>,
+    pub usage: Option<Usage>,
 }
 
 impl Message {
@@ -23,6 +29,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
         }
     }
 
@@ -32,15 +39,21 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: tool_call_id,
+            usage: None,
         }
     }
 
-    pub fn assistant(content: String, tool_calls: Option<Vec<ToolCall>>) -> Self {
+    pub fn assistant(
+        content: String,
+        tool_calls: Option<Vec<ToolCall>>,
+        usage: Option<Usage>,
+    ) -> Self {
         Self {
             role: RoleType::Assistant,
             content: content.into(),
             tool_calls: tool_calls,
             tool_call_id: None,
+            usage: usage,
         }
     }
 
@@ -50,6 +63,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            usage: None,
         }
     }
 }

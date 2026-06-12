@@ -62,7 +62,7 @@ impl PromptComposer {
                 prompt,
                 "\n# 项目专属指南 (来自 AGENTS.md)\n以下是当前工作区特有的架构规范与注意事项，你的行为必须绝对符合以下要求：\n```markdown\n{}\n```\n",
                 content,
-            ).map_err(|e| AppError::Generic(e.to_string()));
+            ).map_err(|e| AppError::Generic(e.to_string()))?;
         }
 
         if self.plan_mode {
@@ -79,6 +79,7 @@ impl PromptComposer {
             content: prompt,
             tool_calls: None,
             tool_call_id: None,
+            usage: None,
         })
     }
 }

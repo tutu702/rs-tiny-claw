@@ -1,10 +1,6 @@
 use crate::{
     context::{compactor::Compactor, composer::PromptComposer, recovery::RecoveryManager},
-    engine::{
-        reminder::ReminderInjector,
-        reporter::{self, Reporter},
-        session::Session,
-    },
+    engine::{reminder::ReminderInjector, reporter::Reporter, session::Session},
     error::{AppError, Result},
     provider::LlmProvider,
     schema::{Message, ToolCall, ToolResult},
@@ -136,6 +132,7 @@ impl AgentEngine {
             let final_assistant_msg = Message::assistant(
                 format!("{} \n {}", current_turn_thinking_content, message.content),
                 tool_calls.clone(),
+                None,
             );
             session.append(&[final_assistant_msg])?;
             compacted_context.push(message);

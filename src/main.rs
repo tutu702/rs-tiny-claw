@@ -3,14 +3,17 @@ use clap::Parser;
 use rs_tiny_claw::{
     channel::{
         feishu_approval::{self, GLOBAL_APPROVAL_MGR},
-        feishu_bot::{self, FeishuBot, FeishuReporter},
+        feishu_bot::{FeishuBot, FeishuReporter},
     },
     engine::{
-        r#loop::AgentEngine, reporter::Reporter, session::GLOBAL_SESSION_MGR,
+        r#loop::AgentEngine,
+        reporter::Reporter,
+        session::{GLOBAL_SESSION_MGR, Session},
         terminal_reporter::TerminalReporter,
     },
+    observability::tracker::CostTracker,
     provider::openai::OpenaiProvider,
-    schema::{Message, ToolCall},
+    schema::Message,
     tools::{
         Registry, ToolRegistry,
         bash::BashTool,
@@ -67,8 +70,9 @@ async fn cli_run(
         return Ok(());
     }
     let llm_provider = OpenaiProvider::new(&base_url, &model, &api_key);
-    let provider = Arc::new(Mutex::new(llm_provider));
 
+    let session = GLOBAL_SESSION_MGR.get_or_create("test_observability_001", work_dir)?;
+    let tracked_provider = CostTracker::new(Box::new(llm_provider), model, Arc::clone(&session));
     // 【防御沙箱】为子智能体准备受限的只读注册表
     let read_only_registry = ToolRegistry::new();
     read_only_registry
@@ -91,7 +95,7 @@ async fn cli_run(
         .await;
 
     let engine = Arc::new(AgentEngine::new(
-        provider,
+        Arc::new(Mutex::new(tracked_provider)),
         Arc::clone(&registry) as Arc<dyn Registry>,
         &work_dir,
         false,
@@ -107,7 +111,7 @@ async fn cli_run(
         .await;
 
     // cli_start_with_session(engine).await?;
-    cli_start(&work_dir, &prompt, engine).await?;
+    cli_start(&prompt, engine, session).await?;
     Ok(())
 }
 
@@ -131,7 +135,7 @@ async fn run_session_a(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) ->
     // 故意制造大量"废话"对话，刷掉记忆（假设 Working Memory Limit=6）
     for _ in 0..6 {
         session.append(&[Message::user("这只是一句闲聊占位符。", None)])?;
-        session.append(&[Message::assistant("好的，收到闲聊。".into(), None)])?;
+        session.append(&[Message::assistant("好的，收到闲聊。".into(), None, None)])?;
 
         println!("\n>>> 🙋‍♂️ [Session A / Turn 2]: 请直接告诉我，刚才第一轮你查到的那个密钥是什么？");
         session.append(&[Message::user(
@@ -160,14 +164,23 @@ async fn run_session_b(engine: Arc<AgentEngine>, reporter: Arc<dyn Reporter>) ->
         .map_err(anyhow::Error::from)
 }
 
-async fn cli_start(work_dir: &str, prompt: &str, engine: Arc<AgentEngine>) -> Result<()> {
+async fn cli_start(prompt: &str, engine: Arc<AgentEngine>, session: Arc<Session>) -> Result<()> {
     let reporter = TerminalReporter::new();
-    let session = GLOBAL_SESSION_MGR.get_or_create("test_subagent_001", work_dir)?;
     session.append(&[Message::user(prompt, None)])?;
     engine
-        .run(session, &reporter)
+        .run(Arc::clone(&session), &reporter)
         .await
-        .map_err(anyhow::Error::from)
+        .map_err(anyhow::Error::from)?;
+    println!("\n================ 财务报表 ================");
+    println!("会话 ID: {}", session.id());
+    println!("总消耗 Input Tokens: {}", session.get_total_prompt_tokens());
+    println!(
+        "总消耗 Output Tokens: {}",
+        session.get_total_completion_tokens()
+    );
+    println!("总计费用 (CNY): ¥{:.6}", session.get_total_cost());
+    println!("==========================================");
+    Ok(())
 }
 
 async fn feishu_bot_start(

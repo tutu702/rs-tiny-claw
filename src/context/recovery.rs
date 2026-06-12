@@ -1,5 +1,3 @@
-use crate::error::Result;
-
 pub struct RecoveryManager {}
 
 impl RecoveryManager {

@@ -7,7 +7,6 @@ use tokio::sync::oneshot;
 
 use crate::{
     channel::feishu_bot::FeishuReporter,
-    engine::reporter::Reporter,
     error::{AppError, Result},
 };
 
