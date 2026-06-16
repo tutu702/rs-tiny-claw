@@ -4,11 +4,6 @@ use std::{collections::HashMap, time::Instant};
 
 use crate::{engine::session::Session, error::Result, provider::LlmProvider, schema::Message};
 
-struct ModelPrice {
-    input_price: f64,
-    output_price: f64,
-}
-
 pub static PRICING_MODEL: LazyLock<HashMap<String, ModelPrice>> = LazyLock::new(|| {
     let mut map = HashMap::new();
     map.insert(
@@ -20,6 +15,12 @@ pub static PRICING_MODEL: LazyLock<HashMap<String, ModelPrice>> = LazyLock::new(
     );
     map
 });
+
+pub struct ModelPrice {
+    input_price: f64,
+    output_price: f64,
+}
+
 pub struct CostTracker {
     next_provider: Box<dyn LlmProvider>,
     model_name: String,

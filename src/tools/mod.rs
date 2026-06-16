@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::observability::trace;
 use crate::schema::{ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -29,7 +30,7 @@ pub trait Registry: Send + Sync {
     async fn register(&self, tool: Arc<dyn BaseTool>);
     async fn get_available_tools(&self) -> Vec<ToolDefinition>;
     async fn use_mw(&self, mw: MiddlewareFunc);
-    async fn execute(&self, call: &ToolCall) -> Result<ToolResult>;
+    async fn execute(&self, span: trace::Span, call: &ToolCall) -> Result<ToolResult>;
 }
 
 pub struct ToolRegistry {
@@ -74,7 +75,11 @@ impl Registry for ToolRegistry {
         self.middlewares.write().await.push(mw);
     }
 
-    async fn execute(&self, call: &ToolCall) -> Result<ToolResult> {
+    async fn execute(&self, span: trace::Span, call: &ToolCall) -> Result<ToolResult> {
+        let tool_span = span.start_child("Tool.Execute");
+        tool_span.add_attribute("tool_name", call.name.as_str());
+        tool_span.add_attribute("arguments", call.arguments.clone());
+
         let tool = {
             let tools = self.tools.read().await;
             tools.get(&call.name).cloned()
@@ -90,6 +95,8 @@ impl Registry for ToolRegistry {
         for mw in self.middlewares.read().await.iter() {
             let (allowed, reason) = mw(call.clone()).await;
             if !allowed {
+                tool_span.add_attribute("intercepted", true);
+                tool_span.add_attribute("reject_reason", reason.as_str());
                 println!(
                     "[Registry] ⚠️ 工具 {} 被 Middleware 拦截: {}\n",
                     call.name, reason
@@ -104,16 +111,24 @@ impl Registry for ToolRegistry {
 
         let output = tool.execute(call.arguments.clone()).await;
         match output {
-            Ok(content) => Ok(ToolResult {
-                tool_call_id: call.id.clone(),
-                output: content,
-                is_error: false,
-            }),
-            Err(e) => Ok(ToolResult {
-                tool_call_id: call.id.clone(),
-                output: format!("Error executing {}: {}", call.name, e),
-                is_error: true,
-            }),
+            Ok(content) => {
+                tool_span.add_attribute("output_preview", safe_truncate(&content, 100));
+                tool_span.end();
+                Ok(ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: content,
+                    is_error: false,
+                })
+            }
+            Err(e) => {
+                tool_span.add_attribute("error", format!("{}", e).as_str());
+                tool_span.end();
+                Ok(ToolResult {
+                    tool_call_id: call.id.clone(),
+                    output: format!("Error executing {}: {}", call.name, e),
+                    is_error: true,
+                })
+            }
         }
     }
 }

@@ -71,7 +71,7 @@ async fn cli_run(
     }
     let llm_provider = OpenaiProvider::new(&base_url, &model, &api_key);
 
-    let session = GLOBAL_SESSION_MGR.get_or_create("test_observability_001", work_dir)?;
+    let session = GLOBAL_SESSION_MGR.get_or_create("test_trace_001", work_dir)?;
     let tracked_provider = CostTracker::new(Box::new(llm_provider), model, Arc::clone(&session));
     // 【防御沙箱】为子智能体准备受限的只读注册表
     let read_only_registry = ToolRegistry::new();

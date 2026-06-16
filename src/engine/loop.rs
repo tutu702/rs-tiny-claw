@@ -2,6 +2,7 @@ use crate::{
     context::{compactor::Compactor, composer::PromptComposer, recovery::RecoveryManager},
     engine::{reminder::ReminderInjector, reporter::Reporter, session::Session},
     error::{AppError, Result},
+    observability::trace,
     provider::LlmProvider,
     schema::{Message, ToolCall, ToolResult},
     tools::{Registry, safe_truncate, subagent::AgentRunner},
@@ -59,19 +60,28 @@ impl AgentEngine {
             self.plan_mode,
         );
 
+        let root_span = trace::Span::new("Agent.Run");
+        root_span.add_attribute("SessionID", session.id());
+
+        let _trace_guard =
+            trace::TraceGuard::new(root_span.clone(), self.work_dir.clone(), session.id());
+
         let composer = PromptComposer::new(&self.work_dir, self.plan_mode);
         let system_msg = composer.build()?;
 
-        // let mut turn_count = 0;
+        let mut turn_count = 0;
 
         loop {
-            // turn_count += 1;
+            turn_count += 1;
             // println!("========== [Turn {}] 开始 ==========\n", turn_count);
+            let turn_span = root_span.start_child(format!("Turn-{}", turn_count));
             let mut context_history = vec![];
 
             let working_memory = session.get_working_memory(20)?;
             context_history.push(system_msg.clone());
             context_history.extend(working_memory);
+
+            turn_span.add_attribute("context_message_count", context_history.len());
 
             let mut compacted_context = self.compactor.compact(&context_history)?;
 
@@ -80,10 +90,15 @@ impl AgentEngine {
                 // println!("[Engine][Phase 1] 剥夺工具访问权，强制进入慢思考与规划阶段...");
                 reporter.on_thinking().await;
 
+                // 【埋点 3】：记录 Thinking 调用
+                let think_span = turn_span.start_child("LLM.Thinking");
+
                 let thinking_response = {
                     let mut provider = self.provider.lock().await;
                     provider.generate(&compacted_context, None).await
                 };
+
+                think_span.end(); // 结束思考跨度
 
                 match thinking_response {
                     Ok(v) => {
@@ -105,12 +120,15 @@ impl AgentEngine {
 
             // println!("[Engine][Phase 2] 恢复工具挂载，等待模型采取行动...");
             let available_tools = self.registry.get_available_tools().await;
+            let act_span = turn_span.start_child("LLM.Action");
+
             let response = {
                 let mut provider = self.provider.lock().await;
                 provider
                     .generate(&compacted_context, Some(available_tools))
                     .await
             };
+            act_span.end();
 
             let mut message = match response {
                 Ok(v) => {
@@ -153,8 +171,9 @@ impl AgentEngine {
                     .await;
 
                 let registry = self.registry.clone();
+                let span = turn_span.clone();
                 tasks.push(tokio::spawn(async move {
-                    let result = registry.execute(&tool_call).await?;
+                    let result = registry.execute(span, &tool_call).await?;
                     Ok::<_, AppError>((i, result, tool_call))
                 }));
             }
@@ -212,6 +231,8 @@ impl AgentEngine {
                 }
             }
 
+            turn_span.end();
+
             // for msg in observation_msgs {
             //     context_history.push(msg)
             // }
@@ -228,6 +249,8 @@ impl AgentRunner for AgentEngine {
         read_only_registry: &dyn Registry,
         reporter: &dyn Reporter,
     ) -> Result<String> {
+        let root_span = trace::Span::new("Agent.Run");
+
         // 【核心优化】：子智能体极其容易偷懒。我们必须在 System Prompt 中严厉警告它必须使用工具！
         let mut context_history = vec![Message::system("你是一个专门负责深度探索的探路者 (Explorer Subagent)。
 你的任务是根据主架构师的指令，在当前工作区内仔细阅读代码、查阅日志，搜集足够的信息。
@@ -249,6 +272,8 @@ impl AgentRunner for AgentEngine {
                     MAX_SUB_TRUNS
                 )));
             }
+
+            let turn_span = root_span.start_child(format!("Turn-{}", turn_count));
 
             let available_tools = read_only_registry.get_available_tools().await;
             let compacted_context = self.compactor.compact(&context_history)?;
@@ -285,8 +310,9 @@ impl AgentRunner for AgentEngine {
                     )
                     .await;
                 let registry = self.registry.clone();
+                let span = turn_span.clone();
                 task.push(tokio::spawn(async move {
-                    let result = registry.execute(&tool_call).await?;
+                    let result = registry.execute(span, &tool_call).await?;
                     Ok::<_, AppError>((i, result, tool_call))
                 }));
             }
@@ -328,6 +354,7 @@ impl AgentRunner for AgentEngine {
             }
 
             context_history.extend_from_slice(&observation_msgs);
+            turn_span.end();
         }
     }
 }
@@ -376,7 +403,7 @@ mod tests {
             }]
         }
 
-        async fn execute(&self, call: &ToolCall) -> Result<ToolResult> {
+        async fn execute(&self, _span: trace::Span, call: &ToolCall) -> Result<ToolResult> {
             println!("-> [Mock 工具执行] 获取 {} 的天气中...\n", call.name);
             Ok(ToolResult {
                 tool_call_id: call.id.clone(),
