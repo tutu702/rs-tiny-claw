@@ -20,7 +20,7 @@ use rs_tiny_claw::{
         edit_file::EditFileTool,
         read_file::ReadFileTool,
         subagent::{AgentRunner, SubAgentTool},
-        write_file::WritefileTool,
+        write_file::WriteFileTool,
     },
 };
 use std::{env, sync::Arc, time::Duration};
@@ -87,7 +87,7 @@ async fn cli_run(
         .register(Arc::new(ReadFileTool::new(&work_dir)))
         .await;
     registry
-        .register(Arc::new(WritefileTool::new(&work_dir)))
+        .register(Arc::new(WriteFileTool::new(&work_dir)))
         .await;
     registry.register(Arc::new(BashTool::new(&work_dir))).await;
     registry
@@ -202,7 +202,7 @@ async fn feishu_bot_start(
         .register(Arc::new(ReadFileTool::new(&work_dir)))
         .await;
     registry
-        .register(Arc::new(WritefileTool::new(&work_dir)))
+        .register(Arc::new(WriteFileTool::new(&work_dir)))
         .await;
     registry.register(Arc::new(BashTool::new(&work_dir))).await;
     registry

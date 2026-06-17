@@ -39,11 +39,7 @@ impl Span {
         }
     }
 
-    pub fn add_attribute<V: Into<serde_json::Value>>(
-        &self,
-        key: impl Into<String>,
-        value: V,
-    ) {
+    pub fn add_attribute<V: Into<serde_json::Value>>(&self, key: impl Into<String>, value: V) {
         if let Ok(mut span) = self.inner.lock() {
             span.attributes.insert(key.into(), value.into());
         }

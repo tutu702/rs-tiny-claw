@@ -9,11 +9,11 @@ use crate::{
     tools::BaseTool,
 };
 
-pub struct WritefileTool {
+pub struct WriteFileTool {
     work_dir: String,
 }
 
-impl WritefileTool {
+impl WriteFileTool {
     pub fn new(work_dir: &str) -> Self {
         Self {
             work_dir: work_dir.to_string(),
@@ -22,13 +22,13 @@ impl WritefileTool {
 }
 
 #[derive(Deserialize)]
-struct WritefileArgs {
+struct WriteFileArgs {
     path: String,
     content: String,
 }
 
 #[async_trait]
-impl BaseTool for WritefileTool {
+impl BaseTool for WriteFileTool {
     fn name(&self) -> &str {
         "write_file"
     }
@@ -57,7 +57,7 @@ impl BaseTool for WritefileTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<String> {
-        let input = serde_json::from_value::<WritefileArgs>(args)
+        let input = serde_json::from_value::<WriteFileArgs>(args)
             .map_err(|e| AppError::Generic(format!("参数解析失败: {}", e)))?;
 
         let fullpath = PathBuf::from(&self.work_dir).join(&input.path);
