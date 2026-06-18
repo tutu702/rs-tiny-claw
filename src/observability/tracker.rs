@@ -64,8 +64,8 @@ impl LlmProvider for CostTracker {
 
         let mut cost = 0.0;
         if let Some(ref usage) = message.usage {
-            let prompt_tokens = usage.prompt_tokens;
-            let completion_tokens = usage.completion_tokens;
+            let prompt_tokens = usage.input();
+            let completion_tokens = usage.output();
 
             if let Some(price) = PRICING_MODEL.get(&self.model_name) {
                 // 计算花费 = (输入Tokens * 输入单价 + 输出Tokens * 输出单价) / 1000000

@@ -23,7 +23,12 @@ use rs_tiny_claw::{
         write_file::WriteFileTool,
     },
 };
-use std::{env, sync::Arc, time::Duration};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Parser)]
@@ -33,22 +38,27 @@ use tokio::sync::Mutex;
 struct Cli {
     #[arg(short, long)]
     prompt: Option<String>,
+    #[arg(short, long, default_value = ".")]
+    work_dir: PathBuf,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let work_dir = env::current_dir()
-        .map(|p| p.join("workspace").to_string_lossy().to_string())
-        .unwrap_or_else(|_| ".".into());
-    // let work_dir = "/tmp/project_front";
+    // let work_dir = env::current_dir()
+    //     .map(|p| p.join("workspace").to_string_lossy().to_string())
+    //     .unwrap_or_else(|_| ".".into());
+    let work_dir = std::fs::canonicalize(&cli.work_dir)
+        .unwrap_or_else(|_| cli.work_dir.clone())
+        .to_string_lossy()
+        .to_string();
 
     let base_url = std::env::var("OPENAI_BASE_URL")?;
     let model = std::env::var("LLM_MODEL")?;
     let api_key = std::env::var("LLM_API_KEY")?;
 
-    println!("work_dir: {work_dir}");
+    println!("work_dir: {}", work_dir);
 
     println!("\n>>> 🚀 收到指令: {:?}\n", cli.prompt);
 
@@ -99,7 +109,7 @@ async fn cli_run(
         Arc::clone(&registry) as Arc<dyn Registry>,
         &work_dir,
         false,
-        false,
+        true,
     ));
 
     registry

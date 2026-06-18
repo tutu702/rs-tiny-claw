@@ -141,10 +141,17 @@ impl crate::provider::LlmProvider for OpenaiProvider {
             )));
         }
 
-        let chat_resp: ChatResponse = response
-            .json()
+        let body_text = response
+            .text()
             .await
-            .map_err(|e| AppError::Generic(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| AppError::Generic(format!("Failed to read response body: {}", e)))?;
+
+        let chat_resp: ChatResponse = serde_json::from_str(&body_text).map_err(|e| {
+            AppError::Generic(format!(
+                "Failed to parse response: {}\n--- raw body ---\n{}",
+                e, body_text
+            ))
+        })?;
 
         // 调试日志：打印响应 JSON
         // let response_json = serde_json::to_string_pretty(&chat_resp)

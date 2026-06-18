@@ -8,11 +8,25 @@ pub enum RoleType {
     Tool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Usage {
-    pub prompt_tokens: u64,
-    pub completion_tokens: u64,
+    #[serde(alias = "input_tokens", alias = "prompt_tokens")]
+    pub input_tokens: u64,
+    #[serde(alias = "output_tokens", alias = "completion_tokens")]
+    pub output_tokens: u64,
 }
+
+impl Usage {
+    pub fn input(&self) -> u64 {
+        self.input_tokens
+    }
+
+    pub fn output(&self) -> u64 {
+        self.output_tokens
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Message {
     pub role: RoleType,
